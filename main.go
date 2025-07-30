@@ -84,7 +84,7 @@ func main() {
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "healthy",
-			"service": "log-viewer-service",
+			"service": "log-service",
 			"time":    time.Now().UTC(),
 		})
 	})
