@@ -7,7 +7,10 @@ RUN go build -o main .
 
 FROM alpine:latest
 RUN apk --no-cache add ca-certificates curl
-WORKDIR /root/
+RUN addgroup -g 1000 appgroup && adduser -u 1000 -G appgroup -s /bin/sh -D appuser
+WORKDIR /app
 COPY --from=builder /app/main .
-EXPOSE 8082
+RUN chmod +x ./main && chown appuser:appgroup ./main
+USER appuser
+EXPOSE 8080
 CMD ["./main"]
