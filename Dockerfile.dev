@@ -11,15 +11,20 @@ RUN addgroup -g 1001 -S appgroup && \
 # Set working directory
 WORKDIR /app
 
-# Create cache directories and change ownership
-RUN mkdir -p /go/pkg/mod/cache /go/cache && \
-    chown -R appuser:appgroup /go /app
+# Install Air for hot reload as root and copy to accessible location
+RUN go install github.com/cosmtrek/air@v1.49.0 && \
+    cp /go/bin/air /usr/local/bin/air && \
+    chmod +x /usr/local/bin/air
+
+# Create cache directories and ensure proper permissions
+RUN mkdir -p /go/pkg/mod/cache /go/cache /home/appuser/.cache && \
+    chown -R appuser:appgroup /go /app /home/appuser
 
 # Switch to non-root user
 USER appuser
 
-# Install Air for hot reload as appuser
-RUN go install github.com/cosmtrek/air@v1.49.0
+# Ensure PATH includes Go bin directory
+ENV PATH="/go/bin:/usr/local/bin:${PATH}"
 
 # Set Go environment variables for proper cache handling
 ENV GOCACHE=/go/cache
@@ -39,4 +44,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8001/health || exit 1
 
 # Development command with Air for hot reload
-CMD ["/go/bin/air", "-c", ".air.toml"]
+CMD ["air", "-c", ".air.toml"]
