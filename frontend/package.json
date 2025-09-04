@@ -22,13 +22,12 @@
     "web-vitals": "^2.1.4"
   },
   "scripts": {
-    "start": "react-scripts start",
+    "start": "PORT=3004 react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "lint": "eslint src --ext .ts,.tsx",
-    "format": "prettier --write \"src/**/*.{ts,tsx,css,scss}\"",
-    "prepare": "husky install"
+    "format": "prettier --write \"src/**/*.{ts,tsx,css,scss}\""
   },
   "eslintConfig": {
     "extends": [
@@ -48,5 +47,5 @@
       "last 1 safari version"
     ]
   },
-  "proxy": "http://localhost:8092"
+  "proxy": "http://localhost:8093"
 }

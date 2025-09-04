@@ -35,7 +35,9 @@ export const getLogs = async (containerId: string, limit: number = 100): Promise
       throw new Error(`HTTP error! status: ${response.status}`);
     }
     
-    return await response.json();
+    const data = await response.json();
+    // Handle both array response and object with logs array
+    return Array.isArray(data) ? data : (data.logs || []);
   } catch (error) {
     console.error(`Error fetching logs for container ${containerId}:`, error);
     throw error;

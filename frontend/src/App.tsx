@@ -23,52 +23,85 @@ const App: React.FC = () => {
 
   const logBuffer = useRef<LogEntry[]>([]);
   const bufferTimeout = useRef<number | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const [reconnectAttempts, setReconnectAttempts] = useState(0);
+  const maxReconnectAttempts = 5;
 
-  // WebSocket connection
-  useEffect(() => {
-    const connectWebSocket = () => {
-      const wsUrl = `ws://localhost:8092/api/v1/logs/ws/logs/${selectedContainer}`;
-      const ws = new WebSocket(wsUrl);
-      
-      ws.onopen = () => {
-        console.log('WebSocket connected');
-        setIsConnected(true);
-        setSocket(ws);
-      };
-      
-      ws.onmessage = (event) => {
-        try {
-          const logEntry = JSON.parse(event.data);
-          handleNewLog(logEntry);
-        } catch (error) {
-          console.error('Error parsing WebSocket message:', error);
-        }
-      };
-      
-      ws.onclose = () => {
-        console.log('WebSocket disconnected');
-        setIsConnected(false);
-        setSocket(null);
-        // Reconnect after 3 seconds
-        setTimeout(connectWebSocket, 3000);
-      };
-      
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        setIsConnected(false);
-      };
-    };
-    
-    if (selectedContainer !== 'all') {
-      connectWebSocket();
+  const handleNewLog = useCallback((log: LogEntry) => {
+    setLogs(prevLogs => {
+      const newLogs = [...prevLogs, log].slice(-1000); // Keep latest 1000 logs
+      return newLogs;
+    });
+  }, []);
+
+  const connectWebSocket = useCallback((containerId: string) => {
+    if (wsRef.current) {
+      wsRef.current.close();
     }
+
+    if (containerId === 'all') {
+      // Don't connect WebSocket for "all" containers
+      setIsConnected(false);
+      return;
+    }
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/api/v1/logs/ws/logs/${containerId}`;
     
-    return () => {
-      if (socket) {
-        socket.close();
+    console.log('Connecting WebSocket to:', wsUrl);
+    wsRef.current = new WebSocket(wsUrl);
+
+    wsRef.current.onopen = () => {
+      console.log(`WebSocket connected for container: ${containerId}`);
+      setIsConnected(true);
+      setReconnectAttempts(0);
+    };
+
+    wsRef.current.onmessage = (event: MessageEvent) => {
+      try {
+        const logEntry = JSON.parse(event.data);
+        setLogs(prevLogs => {
+          const newLogs = [...prevLogs, logEntry];
+          // Keep only the last 1000 logs to prevent memory issues
+          return newLogs.slice(-1000);
+        });
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error);
       }
     };
-  }, [selectedContainer]);
+
+    wsRef.current.onclose = () => {
+      console.log(`WebSocket disconnected for container: ${containerId}`);
+      setIsConnected(false);
+      
+      // Attempt to reconnect with exponential backoff
+      if (reconnectAttempts < maxReconnectAttempts) {
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+        setReconnectAttempts(prev => prev + 1);
+        
+        setTimeout(() => {
+          console.log(`Attempting to reconnect (${reconnectAttempts + 1}/${maxReconnectAttempts})`);
+          connectWebSocket(containerId);
+        }, delay);
+      }
+    };
+
+    wsRef.current.onerror = (error: Event) => {
+      console.error(`WebSocket error for container ${containerId}:`, error);
+    };
+  }, [reconnectAttempts, maxReconnectAttempts]);
+
+  // WebSocket connection effect
+  useEffect(() => {
+    connectWebSocket(selectedContainer);
+    
+    return () => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.close(1000, 'Component unmounting');
+      }
+    };
+  }, [selectedContainer, connectWebSocket]);
 
   const loadContainers = useCallback(async () => {
     try {
@@ -93,17 +126,20 @@ const App: React.FC = () => {
   useEffect(() => {
     if (selectedContainer === 'all') {
       setLogs([]);
+      setIsLoading(false);
       return;
     }
 
     const loadInitialLogs = async () => {
       try {
         setIsLoading(true);
+        setError(null);
         const initialLogs = await getLogs(selectedContainer, 100);
         setLogs(initialLogs || []);
       } catch (err) {
         console.error('Error loading initial logs:', err);
         setError('Failed to load logs for container');
+        setLogs([]); // Clear logs on error
       } finally {
         setIsLoading(false);
       }
@@ -111,13 +147,6 @@ const App: React.FC = () => {
 
     loadInitialLogs();
   }, [selectedContainer]);
-
-  const handleNewLog = useCallback((log: LogEntry) => {
-    setLogs(prevLogs => {
-      const newLogs = [log, ...prevLogs].slice(0, 100); // Keep latest 100 logs
-      return newLogs;
-    });
-  }, []);
 
   const filteredLogs = logs.filter(log => {
     if (filter.container !== 'all' && log.container !== filter.container) return false;

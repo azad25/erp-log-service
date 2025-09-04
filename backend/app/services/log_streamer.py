@@ -14,24 +14,31 @@ class LogStreamer:
     """Stream logs from Docker containers via WebSocket"""
     
     def __init__(self):
-        try:
-            self.client = docker.DockerClient(base_url=settings.DOCKER_SOCKET)
-            # Test connection
-            self.client.ping()
-        except Exception as e:
-            logging.warning(f"Docker client initialization failed: {e}")
-            # Fallback to default Docker client
-            try:
-                self.client = docker.from_env()
-            except Exception as fallback_error:
-                logging.error(f"Fallback Docker client also failed: {fallback_error}")
-                self.client = None
+        # Initialize without blocking Docker client connection
+        self.client = None
         self.processor = LogProcessor()
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.active_containers: Set[str] = set()
         self.websockets: Dict[str, Set[WebSocket]] = {}
         self.max_logs_per_container = 1000
         self.log_buffer: Dict[str, List[Dict]] = {}
+        
+    def _get_docker_client(self):
+        """Lazy initialization of Docker client"""
+        if self.client is None:
+            try:
+                self.client = docker.DockerClient(base_url=settings.DOCKER_SOCKET)
+                # Test connection
+                self.client.ping()
+            except Exception as e:
+                logging.warning(f"Docker client initialization failed: {e}")
+                # Fallback to default Docker client
+                try:
+                    self.client = docker.from_env()
+                except Exception as fallback_error:
+                    logging.error(f"Fallback Docker client also failed: {fallback_error}")
+                    self.client = None
+        return self.client
     
     async def add_websocket(self, websocket: WebSocket, container_id: str = 'all'):
         """Add a new WebSocket connection"""
@@ -82,7 +89,11 @@ class LogStreamer:
     async def _stream_logs(self, container_id: str):
         """Stream logs from a container"""
         try:
-            container = self.client.containers.get(container_id)
+            client = self._get_docker_client()
+            if client is None:
+                logger.error("Docker client not available for streaming")
+                return
+            container = client.containers.get(container_id)
             
             # Start with a small number of logs to avoid overwhelming the client
             initial_logs = container.logs(

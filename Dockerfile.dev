@@ -1,12 +1,14 @@
-# Development Dockerfile for ERP Log Service# Use Python 3.11 slim image
+# Development Dockerfile for ERP Log Service
 FROM python:3.11-slim
 
-# Install system dependencies including Docker CLI and curl for health checks
+# Install system dependencies including Docker CLI, Node.js and curl for health checks
 RUN apt-get update && apt-get install -y \
     curl \
     docker.io \
     nginx \
     sudo \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user and add to docker group
@@ -23,8 +25,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy backend application code
 COPY --chown=appuser:appgroup backend/ ./backend/
 
-# Copy frontend build
-COPY --chown=appuser:appgroup frontend/build/ ./frontend/build/
+# Copy frontend source code and install dependencies
+COPY --chown=appuser:appgroup frontend/ ./frontend/
+RUN cd frontend && npm install
 
 # Create nginx configuration for serving frontend and proxying API
 RUN echo 'server { \
@@ -60,33 +63,17 @@ RUN echo 'server { \
     } \
 }' > /etc/nginx/sites-available/default
 
-# Create startup script that runs as root to fix Docker socket permissions
-RUN echo '#!/bin/bash \
-set -e \
-\
-# Fix Docker socket permissions \
-if [ -S /var/run/docker.sock ]; then \
-    chmod 666 /var/run/docker.sock \
-fi \
-\
-# Start nginx in background \
-nginx -g "daemon off;" & \
-\
-# Start FastAPI backend on port 8093 \
-cd /app && python backend/main.py --host 0.0.0.0 --port 8093 & \
-\
-# Wait for any process to exit \
-wait -n \
-\
-# Exit with status of process that exited first \
-exit $?' > /app/start.sh && chmod +x /app/start.sh
+# Copy and set up startup script
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
 # Create necessary directories and set permissions
-RUN mkdir -p /app/logs && \
-    chown -R appuser:appgroup /app
+RUN mkdir -p /app/logs /app/tmp && \
+    chown -R appuser:appgroup /app && \
+    chmod 755 /app/tmp
 
-# Expose port 8092 for the combined service
-EXPOSE 8092
+# Expose ports for the services
+EXPOSE 8092 8093 3004
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \

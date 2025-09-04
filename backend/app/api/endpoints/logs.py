@@ -21,8 +21,9 @@ async def websocket_logs_endpoint(websocket: WebSocket, container_id: str):
         # Add WebSocket to streamer
         await streamer.add_websocket(websocket, container_id)
         
-        # Start streaming for this container
-        await streamer.start_streaming(container_id)
+        # Start streaming for this container if not 'all'
+        if container_id != 'all':
+            await streamer.start_streaming(container_id)
         
         # Keep connection alive
         while True:

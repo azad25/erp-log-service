@@ -12,7 +12,7 @@ import sys
 
 # Configure logging
 logging.basicConfig(
-    level=settings.LOG_LEVEL,
+    level=getattr(logging, settings.LOG_LEVEL.upper()),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler()

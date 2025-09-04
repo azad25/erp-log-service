@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { ContainerInfo } from '../types/containers';
 
-const API_BASE_URL = '/api';
+const API_BASE_URL = '/api/v1/logs';
 
 export const getContainers = async (): Promise<ContainerInfo[]> => {
   const response = await axios.get(`${API_BASE_URL}/containers`);
@@ -14,8 +14,8 @@ export const getContainer = async (id: string): Promise<ContainerInfo> => {
 };
 
 export const getContainerLogs = async (id: string, tail: number = 100): Promise<string[]> => {
-  const response = await axios.get(`${API_BASE_URL}/containers/${id}/logs`, {
-    params: { tail }
+  const response = await axios.get(`${API_BASE_URL}/logs/${id}`, {
+    params: { limit: tail }
   });
   return response.data;
 };

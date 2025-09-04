@@ -4,30 +4,33 @@ module.exports = function(app) {
   app.use(
     '/api',
     createProxyMiddleware({
-      target: 'http://localhost:8000', // Backend server URL
+      target: 'http://localhost:8093', // Backend server URL
       changeOrigin: true,
       ws: true, // Enable WebSocket proxy
-      pathRewrite: {
-        '^/api': '', // Remove /api prefix when forwarding
-      },
+      // Don't rewrite the path - keep /api prefix
       onError: (err, req, res) => {
         console.error('Proxy error:', err);
-        res.writeHead(500, {
-          'Content-Type': 'application/json',
-        });
-        res.end(JSON.stringify({ error: 'Proxy Error', details: err.message }));
+        if (res && typeof res.writeHead === 'function') {
+          res.writeHead(500, {
+            'Content-Type': 'application/json',
+          });
+          res.end(JSON.stringify({ error: 'Proxy Error', details: err.message }));
+        }
       },
     })
   );
 
-  // WebSocket upgrade handling
+  // WebSocket upgrade handling for log streaming
   app.use(
-    '/ws',
+    '/api/v1/logs/ws',
     createProxyMiddleware({
-      target: 'ws://localhost:8000',
+      target: 'ws://localhost:8093',
       ws: true,
       changeOrigin: true,
       logLevel: 'debug',
+      onError: (err, req, res) => {
+        console.error('WebSocket proxy error:', err);
+      },
     })
   );
 };
