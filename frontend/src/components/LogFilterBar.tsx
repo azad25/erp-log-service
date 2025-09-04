@@ -1,6 +1,4 @@
 import React from 'react';
-import { Box, TextField, MenuItem, InputAdornment } from '@mui/material';
-import { Search as SearchIcon } from '@mui/icons-material';
 import { LogFilter } from '../types/logs';
 
 const LOG_LEVELS = [
@@ -23,7 +21,7 @@ const LogFilterBar: React.FC<LogFilterBarProps> = ({
   onFilterChange,
   containerId,
 }) => {
-  const handleLevelChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLevelChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
     onFilterChange({ level: event.target.value });
   };
 
@@ -32,47 +30,44 @@ const LogFilterBar: React.FC<LogFilterBarProps> = ({
   };
 
   return (
-    <Box 
-      sx={{ 
-        p: 1, 
-        borderBottom: 1, 
-        borderColor: 'divider',
-        display: 'flex',
-        gap: 1,
-        bgcolor: 'background.paper',
-      }}
-    >
-      <TextField
-        select
-        size="small"
-        value={filter.level}
-        onChange={handleLevelChange}
-        variant="outlined"
-        sx={{ minWidth: 150 }}
-      >
-        {LOG_LEVELS.map((level) => (
-          <MenuItem key={level.value} value={level.value}>
-            {level.label}
-          </MenuItem>
-        ))}
-      </TextField>
-
-      <TextField
-        fullWidth
-        size="small"
-        placeholder={`Search in ${containerId === 'all' ? 'all containers' : 'this container'}...`}
-        value={filter.search}
-        onChange={handleSearchChange}
-        variant="outlined"
-        InputProps={{
-          startAdornment: (
-            <InputAdornment position="start">
-              <SearchIcon fontSize="small" />
-            </InputAdornment>
-          ),
-        }}
-      />
-    </Box>
+    <div className="log-filter-bar bg-dark border-bottom border-secondary p-3">
+      <div className="row align-items-center">
+        <div className="col-md-3">
+          <select 
+            className="form-select form-select-sm"
+            value={filter.level}
+            onChange={handleLevelChange}
+          >
+            {LOG_LEVELS.map((level) => (
+              <option key={level.value} value={level.value}>
+                {level.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        
+        <div className="col-md-6">
+          <div className="input-group input-group-sm">
+            <span className="input-group-text bg-secondary border-secondary">
+              <i className="bi bi-search text-light"></i>
+            </span>
+            <input
+              type="text"
+              className="form-control bg-dark border-secondary text-light"
+              placeholder={`Search in ${containerId === 'all' ? 'all containers' : 'this container'}...`}
+              value={filter.search}
+              onChange={handleSearchChange}
+            />
+          </div>
+        </div>
+        
+        <div className="col-md-3 text-end">
+          <small className="text-muted">
+            Container: <span className="text-primary">{containerId}</span>
+          </small>
+        </div>
+      </div>
+    </div>
   );
 };
 

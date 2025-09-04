@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.api import api_router
-from app.services.log_streamer import log_streamer
+from app.services.log_streamer import get_log_streamer
 import signal
 import asyncio
 import sys
@@ -24,7 +24,9 @@ logger = logging.getLogger(__name__)
 async def shutdown_event():
     """Handle application shutdown"""
     logger.info("Shutting down...")
-    await log_streamer.stop_all()
+    streamer = get_log_streamer()
+    if streamer:
+        await streamer.stop_all()
     logger.info("Log streamer stopped")
 
 # Handle startup event
@@ -85,18 +87,27 @@ async def websocket_logs(websocket: WebSocket, container_id: str):
         logger.error(f"WebSocket error: {str(e)}")
     finally:
         # Clean up
-        await log_streamer.remove_websocket(websocket, container_id)
+        await get_log_streamer().remove_websocket(websocket, container_id)
 
-def main():
-    """Run the application"""
+if __name__ == "__main__":
+    import uvicorn
+    import sys
+    
+    # Parse command line arguments for port override
+    port = settings.PORT
+    host = settings.HOST
+    
+    for i, arg in enumerate(sys.argv):
+        if arg == "--port" and i + 1 < len(sys.argv):
+            port = int(sys.argv[i + 1])
+        elif arg == "--host" and i + 1 < len(sys.argv):
+            host = sys.argv[i + 1]
+    
     uvicorn.run(
         "main:app",
-        host=settings.HOST,
-        port=settings.PORT,
-        reload=settings.RELOAD,
+        host=host,
+        port=port,
+        reload=False,  # Disable reload in production
         log_level=settings.LOG_LEVEL.lower(),
         workers=1  # Required for WebSocket support
     )
-
-if __name__ == "__main__":
-    main()

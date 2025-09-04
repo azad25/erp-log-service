@@ -14,6 +14,9 @@ export interface ContainerInfo {
   image: string;
   status: string;
   labels: Record<string, string>;
+  isInfra?: boolean;
+  created?: string;
+  ports?: string[];
 }
 
 export type LogFilter = {

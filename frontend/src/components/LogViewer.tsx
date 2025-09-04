@@ -1,5 +1,4 @@
 import React, { useEffect, useRef } from 'react';
-import { Box, Typography, Paper, useTheme } from '@mui/material';
 import { LogEntry } from '../types/logs';
 import { formatTimestamp, getLogLevelColor, formatLogLevel } from '../services/api';
 
@@ -7,10 +6,10 @@ interface LogViewerProps {
   logs: LogEntry[];
   selectedContainer: string;
   isLoading: boolean;
+  isConnected: boolean;
 }
 
-const LogViewer: React.FC<LogViewerProps> = ({ logs, selectedContainer, isLoading }) => {
-  const theme = useTheme();
+const LogViewer: React.FC<LogViewerProps> = ({ logs, selectedContainer, isLoading, isConnected }) => {
   const endOfLogsRef = useRef<HTMLDivElement>(null);
   const prevLogsLength = useRef(0);
 
@@ -24,124 +23,192 @@ const LogViewer: React.FC<LogViewerProps> = ({ logs, selectedContainer, isLoadin
 
   if (isLoading && logs.length === 0) {
     return (
-      <Box sx={{ p: 2, textAlign: 'center' }}>
-        <Typography>Loading logs...</Typography>
-      </Box>
+      <div className="d-flex justify-content-center align-items-center h-100">
+        <div className="text-center">
+          <div className="spinner-border text-primary mb-3" role="status">
+            <span className="visually-hidden">Loading...</span>
+          </div>
+          <p className="text-muted">Loading logs...</p>
+        </div>
+      </div>
     );
   }
 
   if (logs.length === 0) {
     return (
-      <Box sx={{ p: 2, textAlign: 'center' }}>
-        <Typography variant="body2" color="textSecondary">
-          {selectedContainer === 'all' 
-            ? 'No logs available. Select a container to view its logs.'
-            : 'No logs available for this container.'}
-        </Typography>
-      </Box>
+      <div className="d-flex justify-content-center align-items-center h-100">
+        <div className="text-center">
+          <i className="bi bi-file-text display-1 text-muted mb-3"></i>
+          <h5 className="text-muted">
+            {selectedContainer === 'all' 
+              ? 'No logs available. Select a container to view its logs.'
+              : 'No logs available for this container.'}
+          </h5>
+          {!isConnected && (
+            <p className="text-warning">
+              <i className="bi bi-exclamation-triangle me-1"></i>
+              WebSocket disconnected. Logs may not update in real-time.
+            </p>
+          )}
+        </div>
+      </div>
     );
   }
 
+  const getLogEntryClass = (level: string, index: number) => {
+    const baseClass = 'log-entry p-2 mb-1 rounded border-start border-3 slide-in';
+    const isError = level === 'ERROR' || level === 'FATAL';
+    const isWarning = level === 'WARN' || level === 'WARNING';
+    
+    let bgClass = 'bg-dark';
+    let borderClass = 'border-secondary';
+    
+    if (isError) {
+      bgClass = 'bg-danger bg-opacity-10';
+      borderClass = 'border-danger';
+    } else if (isWarning) {
+      bgClass = 'bg-warning bg-opacity-10';
+      borderClass = 'border-warning';
+    } else {
+      bgClass = 'bg-success bg-opacity-10';
+      borderClass = 'border-success';
+    }
+    
+    return `${baseClass} ${bgClass} ${borderClass}`;
+  };
+
   return (
-    <Box sx={{ 
-      height: '100%', 
-      overflowY: 'auto',
-      p: 1,
-      bgcolor: theme.palette.background.default,
-    }}>
+    <div 
+      className="log-viewer h-100 overflow-auto p-2"
+      style={{ 
+        backgroundColor: '#1a1a1a',
+        fontFamily: 'Monaco, "Lucida Console", monospace'
+      }}
+    >
+      {!isConnected && (
+        <div className="alert alert-warning mb-3" role="alert">
+          <i className="bi bi-exclamation-triangle me-2"></i>
+          WebSocket connection lost. Logs may not update in real-time.
+        </div>
+      )}
+      
       {logs.map((log, index) => (
-        <Paper 
+        <div 
           key={`${log.timestamp}-${index}`}
-          elevation={0}
-          sx={{
-            mb: 0.5,
-            p: 1,
-            bgcolor: 'background.paper',
-            borderLeft: `3px solid ${getLogLevelColor(log.level)}`,
-            '&:hover': {
-              bgcolor: 'action.hover',
-            },
+          className={getLogEntryClass(log.level, index)}
+          style={{
+            animationDelay: `${index * 0.05}s`,
+            transition: 'all 0.3s ease'
           }}
         >
-          <Box sx={{ display: 'flex', alignItems: 'flex-start' }}>
-            <Typography 
-              variant="caption" 
-              sx={{ 
-                minWidth: 140, 
-                color: 'text.secondary',
-                fontFamily: 'monospace',
-              }}
+          <div className="d-flex align-items-start">
+            <span 
+              className="text-muted me-3 font-monospace small"
+              style={{ minWidth: '140px', fontSize: '0.75rem' }}
             >
               {formatTimestamp(log.timestamp)}
-            </Typography>
+            </span>
             
-            <Typography 
-              variant="caption" 
-              sx={{ 
-                minWidth: 80, 
-                color: getLogLevelColor(log.level),
-                fontWeight: 'bold',
-                textTransform: 'uppercase',
-                fontFamily: 'monospace',
-                mr: 1,
-              }}
+            <span 
+              className={`badge me-3 ${
+                log.level === 'ERROR' || log.level === 'FATAL' ? 'bg-danger' :
+                log.level === 'WARN' || log.level === 'WARNING' ? 'bg-warning text-dark' :
+                log.level === 'INFO' ? 'bg-info' :
+                'bg-secondary'
+              }`}
+              style={{ minWidth: '60px', fontSize: '0.65rem' }}
             >
               {formatLogLevel(log.level)}
-            </Typography>
+            </span>
             
             {selectedContainer === 'all' && (
-              <Typography 
-                variant="caption" 
-                sx={{ 
-                  minWidth: 120, 
-                  color: 'primary.main',
-                  fontWeight: 'medium',
-                  fontFamily: 'monospace',
-                  mr: 1,
+              <span 
+                className="text-primary me-3 font-monospace small"
+                style={{ 
+                  minWidth: '120px', 
+                  fontSize: '0.75rem',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
+                  whiteSpace: 'nowrap'
                 }}
                 title={log.container}
               >
                 {log.container}
-              </Typography>
+              </span>
             )}
             
-            <Typography 
-              variant="body2" 
-              component="pre"
-              sx={{
-                m: 0,
+            <pre 
+              className="mb-0 text-light flex-grow-1"
+              style={{
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
-                fontFamily: 'monospace',
-                fontSize: '0.8125rem',
-                lineHeight: 1.5,
-                flex: 1,
+                fontSize: '0.8rem',
+                lineHeight: 1.4,
+                fontFamily: 'inherit'
               }}
             >
               {log.message || log.raw}
-            </Typography>
-          </Box>
+            </pre>
+          </div>
           
           {log.extra && Object.keys(log.extra).length > 0 && (
-            <Box sx={{ 
-              mt: 0.5, 
-              ml: 'calc(140px + 80px + 8px)',
-              fontSize: '0.75rem',
-              color: 'text.secondary',
-              fontFamily: 'monospace',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-            }}>
+            <div 
+              className="mt-2 text-muted font-monospace small"
+              style={{ 
+                marginLeft: 'calc(140px + 80px + 24px)',
+                fontSize: '0.7rem',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word'
+              }}
+            >
               {JSON.stringify(log.extra, null, 2)}
-            </Box>
+            </div>
           )}
-        </Paper>
+        </div>
       ))}
       <div ref={endOfLogsRef} />
-    </Box>
+      
+      <style dangerouslySetInnerHTML={{
+        __html: `
+          .slide-in {
+            animation: slideInFromTop 0.3s ease-out forwards;
+          }
+          
+          @keyframes slideInFromTop {
+            from {
+              opacity: 0;
+              transform: translateY(-10px);
+            }
+            to {
+              opacity: 1;
+              transform: translateY(0);
+            }
+          }
+          
+          .log-entry:hover {
+            transform: translateX(3px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+          }
+          
+          .log-viewer::-webkit-scrollbar {
+            width: 8px;
+          }
+          
+          .log-viewer::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.1);
+          }
+          
+          .log-viewer::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.3);
+            border-radius: 4px;
+          }
+          
+          .log-viewer::-webkit-scrollbar-thumb:hover {
+            background: rgba(255,255,255,0.5);
+          }
+        `
+      }} />
+    </div>
   );
 };
 

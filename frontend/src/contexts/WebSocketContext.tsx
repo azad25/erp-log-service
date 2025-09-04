@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useRef, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useCallback, ReactNode, useState } from 'react';
 import { LogEntry } from '../types/logs';
 
 interface WebSocketContextType {

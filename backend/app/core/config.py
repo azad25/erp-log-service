@@ -10,14 +10,14 @@ class Settings(BaseSettings):
     
     # Server
     HOST: str = "0.0.0.0"
-    PORT: int = 8000
+    PORT: int = 8092
     RELOAD: bool = True
     
     # WebSocket
     WS_PATH: str = "/ws/logs"
     
     # Docker
-    DOCKER_SOCKET: str = os.getenv("DOCKER_SOCKET", "unix://var/run/docker.sock")
+    DOCKER_SOCKET: str = os.getenv("DOCKER_SOCKET", "unix:///var/run/docker.sock")
     
     # Logging
     LOG_LEVEL: str = "INFO"
@@ -25,5 +25,6 @@ class Settings(BaseSettings):
     class Config:
         case_sensitive = True
         env_file = ".env"
+        extra = "ignore"
 
 settings = Settings()

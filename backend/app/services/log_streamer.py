@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from typing import Dict, List, Optional, Set
 from fastapi import WebSocket
 from datetime import datetime, timedelta
@@ -13,7 +14,18 @@ class LogStreamer:
     """Stream logs from Docker containers via WebSocket"""
     
     def __init__(self):
-        self.client = docker.DockerClient(base_url=settings.DOCKER_SOCKET)
+        try:
+            self.client = docker.DockerClient(base_url=settings.DOCKER_SOCKET)
+            # Test connection
+            self.client.ping()
+        except Exception as e:
+            logging.warning(f"Docker client initialization failed: {e}")
+            # Fallback to default Docker client
+            try:
+                self.client = docker.from_env()
+            except Exception as fallback_error:
+                logging.error(f"Fallback Docker client also failed: {fallback_error}")
+                self.client = None
         self.processor = LogProcessor()
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.active_containers: Set[str] = set()
@@ -48,40 +60,24 @@ class LogStreamer:
     
     async def _send_initial_logs(self, websocket: WebSocket, container_id: str):
         """Send initial logs to a new WebSocket connection"""
-        logs = self.log_buffer.get(container_id, [])
-        for log in logs[-100:]:  # Send last 100 logs
-            try:
+        if container_id in self.log_buffer:
+            for log in self.log_buffer[container_id]:
                 await websocket.send_json(log)
-            except Exception as e:
-                logger.error(f"Error sending initial logs: {str(e)}")
-                break
-    
+
     async def start_streaming(self, container_id: str):
         """Start streaming logs for a container"""
-        if container_id in self.active_containers:
+        if container_id in self.active_tasks:
             return
-            
+
         self.active_containers.add(container_id)
-        self.log_buffer[container_id] = []
-        
-        task = asyncio.create_task(self._stream_logs(container_id))
-        self.active_tasks[container_id] = task
-        logger.info(f"Started streaming logs for container: {container_id}")
-    
+        self.active_tasks[container_id] = asyncio.create_task(self._stream_logs(container_id))
+
     async def stop_streaming(self, container_id: str):
         """Stop streaming logs for a container"""
         if container_id in self.active_tasks:
-            task = self.active_tasks.pop(container_id)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            
-            if container_id in self.active_containers:
-                self.active_containers.remove(container)
-            
-            logger.info(f"Stopped streaming logs for container: {container_id}")
+            self.active_tasks[container_id].cancel()
+            del self.active_tasks[container_id]
+            self.active_containers.discard(container_id)
     
     async def _stream_logs(self, container_id: str):
         """Stream logs from a container"""
@@ -178,5 +174,12 @@ class LogStreamer:
         self.websockets.clear()
         self.log_buffer.clear()
 
-# Global instance
-log_streamer = LogStreamer()
+# Global instance - initialized lazily
+log_streamer = None
+
+def get_log_streamer():
+    """Get or create the global log streamer instance"""
+    global log_streamer
+    if log_streamer is None:
+        log_streamer = LogStreamer()
+    return log_streamer

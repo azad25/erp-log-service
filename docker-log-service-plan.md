@@ -733,7 +733,7 @@ Style the UI with CSS animations
 use 8092 port for this service
 and make sure 
 the page displays all the application services first
-the page will display all the container logs within the viewport height
+the page will display each container logs  like the above design within the viewport height
 then the infra services
 make sure to add a way to see previous logs of each container
 add tooltip when hovered over container to show container info
@@ -741,5 +741,6 @@ make sure to add a green fot circle for running containers and red circle dot fo
 orange dot icon for when starting
 add start,stop,restart respective buttons for each container
 use just icons for buttons, no title needed
-also add a icon to view all the rag lows in a modal, when clicked, a modal will full screen open and show all the logs of the selected container, and button for closing the modal
-
+also add a icon beside each containers button to view all the related container logs in a modal, when clicked, a modal will full screen open and show all the logs of the selected container, and button for closing the modal
+the log list items in modal should have a background light green or light red based on success log or error logs
+new logs must slide in, old log slide out
