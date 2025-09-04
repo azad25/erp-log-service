@@ -2,18 +2,11 @@ export interface ContainerInfo {
   id: string;
   name: string;
   image: string;
-  status: 'running' | 'exited' | 'paused' | 'restarting' | 'dead' | 'created';
-  state: string;
-  created: string;
+  status: string;
   labels: Record<string, string>;
-  networks: string[];
-  ports: Array<{
-    ip: string;
-    privatePort: number;
-    publicPort: number;
-    type: string;
-  }>;
   isInfra?: boolean;
+  created?: string;
+  ports?: string[];
 }
 
 export interface ContainerStats {

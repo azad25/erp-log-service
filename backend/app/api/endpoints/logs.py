@@ -24,15 +24,29 @@ async def websocket_logs_endpoint(websocket: WebSocket, container_id: str):
         # Start streaming for this container if not 'all'
         if container_id != 'all':
             await streamer.start_streaming(container_id)
+            
+            # Send initial logs from buffer
+            if container_id in streamer.log_buffer:
+                for log in streamer.log_buffer[container_id]:
+                    await websocket.send_text(json.dumps(log))
         
         # Keep connection alive
         while True:
-            # Wait for any message from client (heartbeat)
             try:
                 data = await websocket.receive_text()
-                # Echo back or handle client messages if needed
+                data = json.loads(data)
+                
+                # Handle heartbeat
+                if data.get('type') == 'heartbeat':
+                    await websocket.send_text(json.dumps({'type': 'heartbeat_ack'}))
+                    continue
+                    
             except WebSocketDisconnect:
+                logger.info(f"Client disconnected from container {container_id}")
                 break
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid message format from client for container {container_id}")
+                continue
                 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for container {container_id}")

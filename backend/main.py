@@ -1,5 +1,6 @@
 import logging
 import uvicorn
+import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -47,10 +48,11 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=["http://localhost:3004", "http://localhost:8093", "http://localhost:8092"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Include API routes
@@ -73,13 +75,28 @@ async def websocket_logs(websocket: WebSocket, container_id: str):
     await websocket.accept()
     
     try:
+        # Get streamer instance
+        log_streamer = get_log_streamer()
+        
         # Add WebSocket to active connections
         await log_streamer.add_websocket(websocket, container_id)
         
-        # Keep connection alive
+        # Keep connection alive and handle messages
         while True:
-            # Just keep receiving messages to detect disconnection
-            await websocket.receive_text()
+            try:
+                # Receive messages to detect disconnection and handle heartbeat
+                message = await websocket.receive_text()
+                data = json.loads(message)
+                
+                # Handle heartbeat
+                if data.get('type') == 'heartbeat':
+                    await websocket.send_text(json.dumps({'type': 'heartbeat_ack'}))
+                    
+            except json.JSONDecodeError:
+                # Ignore invalid JSON messages
+                continue
+            except WebSocketDisconnect:
+                break
             
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for container: {container_id}")
@@ -87,7 +104,8 @@ async def websocket_logs(websocket: WebSocket, container_id: str):
         logger.error(f"WebSocket error: {str(e)}")
     finally:
         # Clean up
-        await get_log_streamer().remove_websocket(websocket, container_id)
+        log_streamer = get_log_streamer()
+        await log_streamer.remove_websocket(websocket, container_id)
 
 if __name__ == "__main__":
     import uvicorn

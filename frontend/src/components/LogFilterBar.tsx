@@ -30,11 +30,11 @@ const LogFilterBar: React.FC<LogFilterBarProps> = ({
   };
 
   return (
-    <div className="log-filter-bar bg-dark border-bottom border-secondary p-3">
-      <div className="row align-items-center">
-        <div className="col-md-3">
+    <div className="log-filter-bar bg-secondary border-bottom border-dark p-2 flex-shrink-0">
+      <div className="row align-items-center g-2">
+        <div className="col-md-2">
           <select 
-            className="form-select form-select-sm"
+            className="form-select form-select-sm bg-dark text-light border-secondary"
             value={filter.level}
             onChange={handleLevelChange}
           >
@@ -46,24 +46,35 @@ const LogFilterBar: React.FC<LogFilterBarProps> = ({
           </select>
         </div>
         
-        <div className="col-md-6">
+        <div className="col-md-7">
           <div className="input-group input-group-sm">
-            <span className="input-group-text bg-secondary border-secondary">
-              <i className="bi bi-search text-light"></i>
+            <span className="input-group-text bg-dark text-light border-secondary">
+              <i className="bi bi-search"></i>
             </span>
             <input
               type="text"
               className="form-control bg-dark border-secondary text-light"
-              placeholder={`Search in ${containerId === 'all' ? 'all containers' : 'this container'}...`}
+              placeholder={`Search in ${containerId === 'all' ? 'all containers' : containerId.replace('erp-suite-', '')}...`}
               value={filter.search}
               onChange={handleSearchChange}
             />
+            {filter.search && (
+              <button
+                className="btn btn-outline-secondary btn-sm"
+                type="button"
+                onClick={() => onFilterChange({ search: '' })}
+                title="Clear search"
+              >
+                <i className="bi bi-x"></i>
+              </button>
+            )}
           </div>
         </div>
         
         <div className="col-md-3 text-end">
           <small className="text-muted">
-            Container: <span className="text-primary">{containerId}</span>
+            <i className="bi bi-box me-1"></i>
+            {containerId === 'all' ? 'All Containers' : containerId.replace('erp-suite-', '')}
           </small>
         </div>
       </div>

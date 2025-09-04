@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     
     # Server
     HOST: str = "0.0.0.0"
-    PORT: int = 8092
+    PORT: int = 8093
     RELOAD: bool = True
     
     # WebSocket

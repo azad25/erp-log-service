@@ -8,6 +8,10 @@ README.md
 .env
 .nyc_output
 coverage
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
 .cache
 .parcel-cache
 .DS_Store

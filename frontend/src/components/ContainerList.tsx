@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { ContainerInfo } from '../types/logs';
+import ContainerDetails from './ContainerDetails';
 
 interface ContainerListProps {
   containers: ContainerInfo[];
@@ -14,6 +15,8 @@ const ContainerList: React.FC<ContainerListProps> = ({
   onSelectContainer,
   onRefresh
 }) => {
+  const [selectedContainerDetails, setSelectedContainerDetails] = useState<ContainerInfo | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
   const runningContainers = containers.filter(c => c.status.toLowerCase().includes('up'));
   const stoppedContainers = containers.filter(c => !c.status.toLowerCase().includes('up'));
   
@@ -27,6 +30,28 @@ const ContainerList: React.FC<ContainerListProps> = ({
     } else {
       return { class: 'bg-secondary', icon: 'bi-question-circle', text: 'Unknown' };
     }
+  };
+
+  const handleContainerClick = (container: ContainerInfo, event: React.MouseEvent) => {
+    // If clicking on the info button, show details modal
+    if ((event.target as HTMLElement).closest('.info-btn')) {
+      setSelectedContainerDetails(container);
+      setShowDetails(true);
+      return;
+    }
+    
+    // Otherwise, select container for log viewing
+    const isRunning = container.status.toLowerCase().includes('up');
+    if (isRunning) {
+      onSelectContainer(container.id);
+    }
+  };
+
+  const handleContainerAction = (action: string, containerId: string) => {
+    // Refresh containers after action
+    setTimeout(() => {
+      onRefresh();
+    }, 1000);
   };
 
   return (
@@ -85,13 +110,13 @@ const ContainerList: React.FC<ContainerListProps> = ({
             const statusBadge = getStatusBadge(container.status);
             const isRunning = container.status.toLowerCase().includes('up');
             return (
-              <button
+              <div
                 key={container.id}
-                className={`list-group-item list-group-item-action ${
+                className={`list-group-item list-group-item-action position-relative ${
                   selectedContainer === container.id ? 'active' : ''
                 } ${!isRunning ? 'disabled' : ''}`}
-                onClick={() => isRunning && onSelectContainer(container.id)}
-                disabled={!isRunning}
+                onClick={(e) => handleContainerClick(container, e)}
+                style={{ cursor: 'pointer' }}
               >
                 <div className="d-flex w-100 justify-content-between align-items-center">
                   <div className="flex-grow-1">
@@ -101,14 +126,25 @@ const ContainerList: React.FC<ContainerListProps> = ({
                     </h6>
                     <p className="mb-0 text-muted small text-truncate">{container.image}</p>
                   </div>
-                  <div className="text-end">
+                  <div className="text-end d-flex align-items-center gap-2">
+                    <button
+                      className="btn btn-outline-info btn-sm info-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedContainerDetails(container);
+                        setShowDetails(true);
+                      }}
+                      title="Container Details"
+                    >
+                      <i className="bi bi-info-circle"></i>
+                    </button>
                     <small className={`badge ${statusBadge.class}`}>
                       <i className={`bi ${statusBadge.icon} me-1`}></i>
                       {statusBadge.text}
                     </small>
                   </div>
                 </div>
-              </button>
+              </div>
             );
           })}
 
@@ -126,13 +162,13 @@ const ContainerList: React.FC<ContainerListProps> = ({
             const statusBadge = getStatusBadge(container.status);
             const isRunning = container.status.toLowerCase().includes('up');
             return (
-              <button
+              <div
                 key={container.id}
-                className={`list-group-item list-group-item-action ${
+                className={`list-group-item list-group-item-action position-relative ${
                   selectedContainer === container.id ? 'active' : ''
                 } ${!isRunning ? 'disabled' : ''}`}
-                onClick={() => isRunning && onSelectContainer(container.id)}
-                disabled={!isRunning}
+                onClick={(e) => handleContainerClick(container, e)}
+                style={{ cursor: 'pointer' }}
               >
                 <div className="d-flex w-100 justify-content-between align-items-center">
                   <div className="flex-grow-1">
@@ -142,18 +178,40 @@ const ContainerList: React.FC<ContainerListProps> = ({
                     </h6>
                     <p className="mb-0 text-muted small text-truncate">{container.image}</p>
                   </div>
-                  <div className="text-end">
+                  <div className="text-end d-flex align-items-center gap-2">
+                    <button
+                      className="btn btn-outline-info btn-sm info-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedContainerDetails(container);
+                        setShowDetails(true);
+                      }}
+                      title="Container Details"
+                    >
+                      <i className="bi bi-info-circle"></i>
+                    </button>
                     <small className={`badge ${statusBadge.class}`}>
                       <i className={`bi ${statusBadge.icon} me-1`}></i>
                       {statusBadge.text}
                     </small>
                   </div>
                 </div>
-              </button>
+              </div>
             );
           })}
 
       </div>
+
+      {/* Container Details Modal */}
+      <ContainerDetails
+        container={selectedContainerDetails}
+        show={showDetails}
+        onHide={() => {
+          setShowDetails(false);
+          setSelectedContainerDetails(null);
+        }}
+        onContainerAction={handleContainerAction}
+      />
     </div>
   );
 };

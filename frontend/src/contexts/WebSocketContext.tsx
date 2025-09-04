@@ -25,12 +25,20 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children, 
       ws.current.close();
     }
 
-    // Get the WebSocket URL from the current host
+    // Get the WebSocket URL from environment or fallback to current host
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
+    const host = process.env.REACT_APP_WS_URL || window.location.host;
     const wsUrl = `${protocol}//${host}/api/v1/logs/ws/logs/all`;
     
+    console.log('Connecting to WebSocket:', wsUrl);
     ws.current = new WebSocket(wsUrl);
+    
+    // Set up periodic heartbeat
+    const heartbeatInterval = setInterval(() => {
+      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+        ws.current.send(JSON.stringify({ type: 'heartbeat' }));
+      }
+    }, 30000); // Send heartbeat every 30 seconds
 
     ws.current.onopen = () => {
       console.log('WebSocket connected');

@@ -41,6 +41,28 @@
   }
 }
 
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 .slide-out {
   animation: slideOutToTop 0.3s ease-in forwards;
 }
@@ -56,18 +78,75 @@
   }
 }
 
+/* Fade in animation */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.5s ease-in;
+}
+
 /* Container list hover effects */
+.list-group-item-action {
+  transition: all 0.3s ease;
+  border: 1px solid transparent;
+}
+
 .list-group-item-action:hover {
   transform: translateY(-2px);
-  transition: transform 0.2s ease;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 12px rgba(0, 123, 255, 0.3);
+  border-color: rgba(0, 123, 255, 0.5);
+}
+
+.list-group-item-action.active {
+  background-color: rgba(0, 123, 255, 0.2) !important;
+  border-color: #007bff !important;
 }
 
 /* Log entry hover effects */
-.log-entry:hover {
-  transform: translateX(3px);
+.log-entry {
   transition: all 0.3s ease;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
+
+.log-entry:hover {
+  transform: translateX(5px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* Container details animations */
+.container-details-modal .modal-content {
+  animation: slideInLeft 0.4s ease-out;
+}
+
+/* Button hover effects */
+.btn {
+  transition: all 0.3s ease;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.btn:active {
+  transform: translateY(0);
+}
+
+/* Info button special effects */
+.info-btn {
+  transition: all 0.3s ease;
+}
+
+.info-btn:hover {
+  transform: scale(1.1);
+  box-shadow: 0 0 10px rgba(0, 123, 255, 0.5);
 }
 
 /* Status indicators */

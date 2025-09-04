@@ -19,20 +19,10 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<LogFilter>({ level: 'all', search: '', container: 'all' });
   const [isConnected, setIsConnected] = useState<boolean>(false);
-  const [socket, setSocket] = useState<WebSocket | null>(null);
-
-  const logBuffer = useRef<LogEntry[]>([]);
-  const bufferTimeout = useRef<number | null>(null);
+  
   const wsRef = useRef<WebSocket | null>(null);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const maxReconnectAttempts = 5;
-
-  const handleNewLog = useCallback((log: LogEntry) => {
-    setLogs(prevLogs => {
-      const newLogs = [...prevLogs, log].slice(-1000); // Keep latest 1000 logs
-      return newLogs;
-    });
-  }, []);
 
   const connectWebSocket = useCallback((containerId: string) => {
     if (wsRef.current) {
@@ -46,11 +36,20 @@ const App: React.FC = () => {
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/api/v1/logs/ws/logs/${containerId}`;
+    // Use environment variable or fallback to port 8093
+    const wsHost = process.env.REACT_APP_WS_URL || 'localhost:8093';
+    const wsUrl = `${protocol}//${wsHost}/api/v1/logs/ws/logs/${containerId}`;
     
     console.log('Connecting WebSocket to:', wsUrl);
     wsRef.current = new WebSocket(wsUrl);
+    
+    // Add connection timeout
+    setTimeout(() => {
+      if (wsRef.current && wsRef.current.readyState !== WebSocket.OPEN) {
+        console.log('WebSocket connection timeout');
+        wsRef.current.close();
+      }
+    }, 5000);
 
     wsRef.current.onopen = () => {
       console.log(`WebSocket connected for container: ${containerId}`);
@@ -184,13 +183,13 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="app bg-dark text-light min-vh-100">
+    <div className="app bg-dark text-light vh-100 d-flex flex-column">
       {/* Header */}
-      <header className="bg-dark border-bottom border-secondary py-3">
+      <header className="bg-dark border-bottom border-secondary py-2 flex-shrink-0">
         <div className="container-fluid">
           <div className="row align-items-center">
             <div className="col-md-6">
-              <h1 className="h3 mb-0 text-primary">
+              <h1 className="h4 mb-0 text-primary">
                 <i className="bi bi-layers me-2"></i>
                 ERP Docker Log Viewer
               </h1>
@@ -211,11 +210,12 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      <div className="container-fluid h-100">
-        <div className="row h-100">
+      {/* Main Content Area */}
+      <div className="container-fluid flex-grow-1 d-flex overflow-hidden">
+        <div className="row flex-grow-1 g-0">
           {/* Sidebar */}
-          <div className="col-lg-3 col-md-4 border-end border-secondary bg-dark" style={{ height: 'calc(100vh - 80px)', overflowY: 'auto' }}>
-            <div className="p-3">
+          <div className="col-lg-3 col-md-4 border-end border-secondary bg-dark d-flex flex-column">
+            <div className="p-3 flex-grow-1 overflow-auto">
               <ContainerList 
                 containers={containers}
                 selectedContainer={selectedContainer}
@@ -226,31 +226,37 @@ const App: React.FC = () => {
           </div>
 
           {/* Main Content */}
-          <div className="col-lg-9 col-md-8 p-0">
-            <div className="h-100 d-flex flex-column">
-              <LogFilterBar 
-                filter={filter}
-                onFilterChange={(nf) => setFilter(prev => ({ ...prev, ...nf }))}
-                containerId={selectedContainer}
-              />
-              
-              <div className="flex-grow-1" style={{ height: 'calc(100vh - 160px)' }}>
-                {error ? (
-                  <div className="p-4 text-center">
+          <div className="col-lg-9 col-md-8 d-flex flex-column">
+            <LogFilterBar 
+              filter={filter}
+              onFilterChange={(nf) => setFilter(prev => ({ ...prev, ...nf }))}
+              containerId={selectedContainer}
+            />
+            
+            <div className="flex-grow-1 overflow-hidden">
+              {error ? (
+                <div className="d-flex justify-content-center align-items-center h-100">
+                  <div className="text-center">
                     <div className="alert alert-danger" role="alert">
                       <i className="bi bi-exclamation-triangle me-2"></i>
                       {error}
                     </div>
+                    <button 
+                      className="btn btn-primary"
+                      onClick={handleRefresh}
+                    >
+                      Try Again
+                    </button>
                   </div>
-                ) : (
-                  <LogViewer 
-                    logs={filteredLogs}
-                    selectedContainer={selectedContainer}
-                    isLoading={isLoading}
-                    isConnected={isConnected}
-                  />
-                )}
-              </div>
+                </div>
+              ) : (
+                <LogViewer 
+                  logs={filteredLogs}
+                  selectedContainer={selectedContainer}
+                  isLoading={isLoading}
+                  isConnected={isConnected}
+                />
+              )}
             </div>
           </div>
         </div>
