@@ -1,37 +1,110 @@
-/* ERP Docker Log Viewer Styles */
+/* ERP Docker Log Viewer Styles - Fixed Viewport Height */
+
+/* Reset and base styles */
+html, body {
+  height: 100vh;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+}
+
 .app {
   background-color: #121212;
   color: #e0e0e0;
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-/* Main content area */
-.main-content {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
-  height: calc(100vh - 56px); /* Adjust based on your header height */
+/* Header - fixed height */
+header {
+  flex-shrink: 0;
+  height: auto; /* Let it size naturally */
 }
 
-/* Log container */
+/* Main content area - takes remaining space */
+.main-content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  min-height: 0; /* Important for flex children to shrink */
+}
+
+/* Container fluid and row adjustments */
+.main-content .container-fluid {
+  height: 100%;
+  padding: 0;
+}
+
+.main-content .row {
+  height: 100%;
+  margin: 0;
+}
+
+/* Sidebar - scrollable */
+.main-content .col-lg-3,
+.main-content .col-md-4 {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.main-content .col-lg-3 .p-3,
+.main-content .col-md-4 .p-3 {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px;
+}
+
+/* Log container - scrollable */
 .log-container {
   display: flex;
   flex-direction: column;
-  flex: 1;
-  overflow: hidden;
   height: 100%;
+  overflow: hidden;
 }
 
-/* Log viewer wrapper */
+/* Log filter bar - fixed at top of log area */
+.log-filter-bar {
+  flex-shrink: 0;
+  background-color: #2d2d2d;
+  border-bottom: 1px solid #404040;
+  padding: 8px 16px;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.15) rgba(255, 255, 255, 0.05);
+}
+
+/* Log viewer wrapper - takes remaining space */
 .log-viewer-wrapper {
   flex: 1;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background-color: #1a1a1a;
+  min-height: 0; /* Important for flex children */
+}
+
+/* Log viewer - scrollable */
+.log-viewer {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px;
+  background-color: #121212;
+  color: #e0e0e0;
+  min-height: 0; /* Important for Firefox */
+}
+
+/* Log entry container - if you have a separate container for entries */
+.log-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 /* Custom scrollbar styles */
@@ -63,58 +136,23 @@
   scrollbar-color: rgba(255, 255, 255, 0.15) rgba(255, 255, 255, 0.05);
 }
 
-/* Log filter bar */
-.log-filter-bar {
-  position: sticky;
-  top: 0;
-  z-index: 1000;
-  background-color: #2d2d2d;
-  border-bottom: 1px solid #404040;
-  padding: 8px 16px;
-  flex-shrink: 0;
-  z-index: 10;
-  overflow-x: auto;
-  white-space: nowrap;
-  /* Show scrollbar but style it to be subtle */
-  scrollbar-width: thin;
-  scrollbar-color: rgba(200, 200, 200, 0.3) transparent;
-}
-
 /* Custom scrollbar for filter bar */
 .log-filter-bar::-webkit-scrollbar {
   height: 6px;
 }
 
 .log-filter-bar::-webkit-scrollbar-track {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
 }
 
 .log-filter-bar::-webkit-scrollbar-thumb {
-  background-color: rgba(200, 200, 200, 0.3);
+  background: rgba(255, 255, 255, 0.15);
   border-radius: 3px;
 }
 
 .log-filter-bar::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(200, 200, 200, 0.5);
-}
-
-/* Log viewer */
-.log-viewer {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background-color: #1e1e1e;
-  color: #e0e0e0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 16px;
-  background-color: #121212;
-  display: flex;
-  flex-direction: column;
-  min-height: 0; /* Important for Firefox */
-  scrollbar-width: thin;  /* Firefox */
-  scrollbar-color: rgba(200, 200, 200, 0.3) transparent;
+  background: rgba(255, 255, 255, 0.3);
 }
 
 /* Custom scrollbar for log viewer */
@@ -135,53 +173,40 @@
   background-color: rgba(200, 200, 200, 0.5);
 }
 
-/* Log entry container */
-.log-entries {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding-right: 8px;
-  margin-right: -8px; /* Compensate for scrollbar */
-  scrollbar-width: thin;  /* Firefox */
-  scrollbar-color: rgba(200, 200, 200, 0.3) transparent;
+/* Custom scrollbar for sidebar */
+.main-content .col-lg-3 .p-3::-webkit-scrollbar,
+.main-content .col-md-4 .p-3::-webkit-scrollbar {
+  width: 8px;
 }
 
-/* Custom scrollbar for log entries */
-.log-entries::-webkit-scrollbar {
-  width: 6px;
-}
-
-.log-entries::-webkit-scrollbar-track {
+.main-content .col-lg-3 .p-3::-webkit-scrollbar-track,
+.main-content .col-md-4 .p-3::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.log-entries::-webkit-scrollbar-thumb {
-  background-color: rgba(200, 200, 200, 0.2);
-  border-radius: 3px;
+.main-content .col-lg-3 .p-3::-webkit-scrollbar-thumb,
+.main-content .col-md-4 .p-3::-webkit-scrollbar-thumb {
+  background-color: rgba(200, 200, 200, 0.3);
+  border-radius: 4px;
 }
 
-.log-entries::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(200, 200, 200, 0.4);
+.main-content .col-lg-3 .p-3::-webkit-scrollbar-thumb:hover,
+.main-content .col-md-4 .p-3::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(200, 200, 200, 0.5);
 }
 
 /* Log entry */
 .log-entry {
-  font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
+  font-family: 'Fira Code', 'Consolas', 'Monaco', 'Courier New', monospace;
   font-size: 0.85rem;
-  line-height: 1.4;
-  padding: 2px 10px;
-  border-left: 3px solid transparent;
-  transition: all 0.2s ease;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: 'Courier New', monospace;
-  font-size: 0.9rem;
   line-height: 1.4;
   padding: 4px 8px;
   margin: 2px 0;
   border-radius: 3px;
-  word-break: break-word;
+  border-left: 3px solid transparent;
+  transition: all 0.2s ease;
   white-space: pre-wrap;
+  word-break: break-word;
   animation: slideInFromTop 0.2s ease-out;
 }
 
@@ -344,55 +369,4 @@
   100% {
     opacity: 1;
   }
-}
-
-/* Dark theme overrides for Bootstrap */
-.bg-dark {
-  background-color: #1a1a1a !important;
-}
-
-.text-light {
-  color: #e0e0e0 !important;
-}
-
-.border-secondary {
-  border-color: #404040 !important;
-}
-
-.form-control:focus {
-  border-color: #0d6efd;
-  box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25);
-}
-
-.btn-outline-primary:hover {
-  background-color: #0d6efd;
-  border-color: #0d6efd;
-}
-
-/* Modal styles */
-.modal-fullscreen .modal-content {
-  background-color: #1a1a1a;
-  color: #e0e0e0;
-}
-
-/* Log level badges */
-.badge.bg-danger {
-  background-color: #dc3545 !important;
-}
-
-.badge.bg-warning {
-  background-color: #ffc107 !important;
-  color: #000 !important;
-}
-
-.badge.bg-info {
-  background-color: #0dcaf0 !important;
-}
-
-.badge.bg-success {
-  background-color: #198754 !important;
-}
-
-.badge.bg-secondary {
-  background-color: #6c757d !important;
 }

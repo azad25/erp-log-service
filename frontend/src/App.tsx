@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, FC } from 'react';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import 'bootstrap-icons/font/bootstrap-icons.css';
 import { LogEntry, ContainerInfo, LogFilter } from './types/logs';
@@ -9,31 +9,48 @@ import ConnectionStatus from './components/ConnectionStatus';
 import { getContainers, getLogs } from './services/api';
 import './App.css';
 
-
-const App: React.FC = () => {
+const App: FC = () => {
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
   const [selectedContainer, setSelectedContainer] = useState<string>('all');
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<LogFilter>({ level: 'all', search: '', container: 'all' });
-  const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [connectionStatus, setConnectionStatus] = useState<{
+    isConnected: boolean;
+    lastMessageTime: number | null;
+    connectionError: string | null;
+  }>({
+    isConnected: false,
+    lastMessageTime: null,
+    connectionError: null
+  });
   
   const wsRef = useRef<WebSocket | null>(null);
-  const [reconnectAttempts, setReconnectAttempts] = useState(0);
-  const maxReconnectAttempts = 5;
+  const [reconnectAttempts, setReconnectAttempts] = useState<number>(0);
+  const maxReconnectAttempts: number = 5;
+  const lastMessageTimeRef = useRef<number | null>(null);
+  const [filteredLogs, setFilteredLogs] = useState<LogEntry[]>([]);
 
   const connectWebSocket = useCallback((containerId: string) => {
     // Clean up any existing connection
     if (wsRef.current) {
       wsRef.current.close(1000, 'Switching containers');
       wsRef.current = null;
-      setIsConnected(false);
+      setConnectionStatus(prev => ({
+        ...prev,
+        isConnected: false,
+        connectionError: 'Switching containers'
+      }));
     }
 
     if (containerId === 'all') {
       // Don't connect WebSocket for "all" containers
-      setIsConnected(false);
+      setConnectionStatus(prev => ({
+        ...prev,
+        isConnected: false,
+        connectionError: 'No active connection (all containers view)'
+      }));
       return;
     }
 
@@ -59,8 +76,13 @@ const App: React.FC = () => {
       wsRef.current.onopen = () => {
         clearTimeout(connectionTimeout);
         console.log(`WebSocket connected for container: ${containerId}`);
-        setIsConnected(true);
+        setConnectionStatus({
+          isConnected: true,
+          lastMessageTime: Date.now(),
+          connectionError: null
+        });
         setReconnectAttempts(0);
+        lastMessageTimeRef.current = Date.now();
         
         // Send initial heartbeat
         wsRef.current?.send(JSON.stringify({ type: 'heartbeat' }));
@@ -69,6 +91,13 @@ const App: React.FC = () => {
       wsRef.current.onmessage = (event: MessageEvent) => {
         try {
           const data = JSON.parse(event.data);
+          const currentTime = Date.now();
+          lastMessageTimeRef.current = currentTime;
+          
+          setConnectionStatus(prev => ({
+            ...prev,
+            lastMessageTime: currentTime
+          }));
           
           // Handle connection established message
           if (data.type === 'connection_established') {
@@ -96,7 +125,14 @@ const App: React.FC = () => {
       wsRef.current.onclose = (event: CloseEvent) => {
         clearTimeout(connectionTimeout);
         console.log(`WebSocket disconnected for container: ${containerId}`, event);
-        setIsConnected(false);
+        
+        const errorMessage = event.reason || `Connection closed with code ${event.code}${event.wasClean ? ' (clean)' : ''}`;
+        
+        setConnectionStatus({
+          isConnected: false,
+          lastMessageTime: lastMessageTimeRef.current,
+          connectionError: errorMessage
+        });
         
         // Don't try to reconnect if this was a normal closure
         if (event.code === 1000) {
@@ -107,9 +143,10 @@ const App: React.FC = () => {
         // Attempt to reconnect with exponential backoff
         if (reconnectAttempts < maxReconnectAttempts) {
           const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
-          setReconnectAttempts(prev => prev + 1);
+          const nextAttempt = reconnectAttempts + 1;
+          setReconnectAttempts(nextAttempt);
           
-          console.log(`Attempting to reconnect (${reconnectAttempts + 1}/${maxReconnectAttempts}) in ${delay}ms`);
+          console.log(`Attempting to reconnect (${nextAttempt}/${maxReconnectAttempts}) in ${delay}ms`);
           
           setTimeout(() => {
             if (wsRef.current?.readyState !== WebSocket.OPEN) {
@@ -118,16 +155,28 @@ const App: React.FC = () => {
           }, delay);
         } else {
           console.error('Max reconnection attempts reached');
+          setConnectionStatus(prev => ({
+            ...prev,
+            connectionError: 'Connection failed after multiple attempts'
+          }));
         }
       };
 
-      wsRef.current.onerror = (error: Event) => {
+      wsRef.current.onerror = (error) => {
         console.error('WebSocket error:', error);
+        setConnectionStatus(prev => ({
+          ...prev,
+          isConnected: false,
+          connectionError: 'WebSocket error occurred'
+        }));
       };
-      
     } catch (error) {
       console.error('Error creating WebSocket:', error);
-      setIsConnected(false);
+      setConnectionStatus(prev => ({
+        ...prev,
+        isConnected: false,
+        connectionError: 'Failed to create WebSocket connection'
+      }));
     }
   }, [reconnectAttempts, maxReconnectAttempts]);
 
@@ -146,7 +195,10 @@ const App: React.FC = () => {
           wsRef.current.close(1000, 'Component unmounting');
         }
         wsRef.current = null;
-        setIsConnected(false);
+        setConnectionStatus(prev => ({
+          ...prev,
+          isConnected: false
+        }));
       }
     };
   }, [selectedContainer, connectWebSocket]);
@@ -197,40 +249,35 @@ const App: React.FC = () => {
     loadInitialLogs();
   }, [selectedContainer]);
 
-  const filteredLogs = logs.filter(log => {
-    if (filter.container !== 'all' && log.container !== filter.container) return false;
-    if (filter.level !== 'all' && log.level && log.level.toLowerCase() !== filter.level.toLowerCase()) return false;
-    if (filter.search) {
-      const s = filter.search.toLowerCase();
-      if (!((log.message || '').toLowerCase().includes(s) || (log.container || '').toLowerCase().includes(s))) {
-        if (log.raw) return JSON.stringify(log.raw).toLowerCase().includes(s);
-        return false;
-      }
-    }
-    return true;
-  });
-
-  const handleRefresh = async () => {
-    try {
-      setIsLoading(true);
-      await loadContainers();
-      if (selectedContainer !== 'all') {
-        const initialLogs = await getLogs(selectedContainer, 100);
-        setLogs(initialLogs || []);
-      } else {
-        setLogs([]);
-      }
-    } catch (err) {
-      console.error('Error refreshing:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleContainerSelect = (containerId: string) => {
+  const handleContainerSelect = useCallback((containerId: string): void => {
     setSelectedContainer(containerId);
     setLogs([]); // Clear logs when switching containers
-  };
+  }, []);
+
+  const handleRefresh = useCallback(() => {
+    loadContainers();
+  }, [loadContainers]);
+
+  // Apply filters to logs
+  useEffect(() => {
+    let filtered = logs;
+    
+    // Filter by log level
+    if (filter.level !== 'all') {
+      filtered = filtered.filter(log => log.level?.toLowerCase() === filter.level.toLowerCase());
+    }
+    
+    // Filter by search term
+    if (filter.search) {
+      const searchTerm = filter.search.toLowerCase();
+      filtered = filtered.filter(log => 
+        log.message?.toLowerCase().includes(searchTerm) ||
+        log.container?.toLowerCase().includes(searchTerm)
+      );
+    }
+    
+    setFilteredLogs(filtered);
+  }, [logs, filter]);
 
   return (
     <div className="app bg-dark text-light vh-100 d-flex flex-column">
@@ -246,7 +293,11 @@ const App: React.FC = () => {
               <small className="text-muted">Real-time container log monitoring</small>
             </div>
             <div className="col-md-6 text-end">
-              <ConnectionStatus isConnected={isConnected} />
+              <ConnectionStatus 
+                isConnected={connectionStatus.isConnected} 
+                lastMessageTime={connectionStatus.lastMessageTime || undefined}
+                connectionError={connectionStatus.connectionError || undefined}
+              />
               <button 
                 className="btn btn-outline-primary btn-sm ms-2"
                 onClick={handleRefresh}
@@ -260,53 +311,62 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      {/* Main Content Area */}
-      <div className="container-fluid flex-grow-1 d-flex overflow-hidden">
-        <div className="row flex-grow-1 g-0">
-          {/* Sidebar */}
-          <div className="col-lg-3 col-md-4 border-end border-secondary bg-dark d-flex flex-column">
-            <div className="p-3 flex-grow-1 overflow-auto">
-              <ContainerList 
-                containers={containers}
-                selectedContainer={selectedContainer}
-                onSelectContainer={handleContainerSelect}
-                onRefresh={loadContainers}
-              />
-            </div>
-          </div>
-
-          {/* Main Content */}
-          <div className="col-lg-9 col-md-8 d-flex flex-column">
-            <LogFilterBar 
-              filter={filter}
-              onFilterChange={(nf) => setFilter(prev => ({ ...prev, ...nf }))}
-              containerId={selectedContainer}
-            />
-            
-            <div className="flex-grow-1 overflow-hidden">
-              {error ? (
-                <div className="d-flex justify-content-center align-items-center h-100">
-                  <div className="text-center">
-                    <div className="alert alert-danger" role="alert">
-                      <i className="bi bi-exclamation-triangle me-2"></i>
-                      {error}
-                    </div>
-                    <button 
-                      className="btn btn-primary"
-                      onClick={handleRefresh}
-                    >
-                      Try Again
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <LogViewer 
-                  logs={filteredLogs}
+      {/* Main Content Area - Added main-content class */}
+      <div className="main-content">
+        <div className="container-fluid flex-grow-1 d-flex">
+          <div className="row flex-grow-1 g-0 w-100">
+            {/* Sidebar */}
+            <div className="col-lg-3 col-md-4 border-end border-secondary bg-dark d-flex flex-column">
+              <div className="p-3 flex-grow-1" style={{ overflowY: 'auto' }}>
+                <ContainerList 
+                  containers={containers}
                   selectedContainer={selectedContainer}
-                  isLoading={isLoading}
-                  isConnected={isConnected}
+                  onSelectContainer={handleContainerSelect}
+                  onRefresh={loadContainers}
                 />
-              )}
+              </div>
+            </div>
+
+            {/* Main Content - Added log-container class */}
+            <div className="log-container col-lg-9 col-md-8 d-flex flex-column">
+              {/* Log Filter Bar - Added log-filter-bar class */}
+              <div className="log-filter-bar">
+                <LogFilterBar 
+                  filter={filter}
+                  onFilterChange={(nf) => setFilter(prev => ({ ...prev, ...nf }))}
+                  containerId={selectedContainer}
+                />
+              </div>
+              
+              {/* Log Viewer Wrapper - Added log-viewer-wrapper class */}
+              <div className="log-viewer-wrapper flex-grow-1">
+                {error ? (
+                  <div className="d-flex justify-content-center align-items-center h-100">
+                    <div className="text-center">
+                      <div className="alert alert-danger" role="alert">
+                        <i className="bi bi-exclamation-triangle me-2"></i>
+                        {error}
+                      </div>
+                      <button 
+                        className="btn btn-primary"
+                        onClick={handleRefresh}
+                      >
+                        Try Again
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* Log Viewer - Added log-viewer class */
+                  <div className="log-viewer">
+                    <LogViewer 
+                      logs={filteredLogs}
+                      selectedContainer={selectedContainer}
+                      isLoading={isLoading}
+                      isConnected={connectionStatus.isConnected}
+                    />
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
