@@ -159,7 +159,7 @@ const LogViewer: React.FC<LogViewerProps> = ({
 
   return (
     <div className="log-viewer-container d-flex flex-column h-100">
-      <div className="log-content flex-grow-1 overflow-auto" style={{ backgroundColor: 'transparent', color: '#000' }} ref={logContainerRef}>
+      <div className="log-content flex-grow-1 overflow-auto" style={{ backgroundColor: '#ffffff', color: '#000000' }} ref={logContainerRef}>
         {filteredLogs.length === 0 ? (
           <div className="d-flex justify-content-center align-items-center h-100">
             <div className="text-center">
@@ -187,6 +187,11 @@ const LogViewer: React.FC<LogViewerProps> = ({
                 <span className={`badge ${getLogLevelBadge(log.level || 'info')} me-3 mx-1`}>
                   {formatLogLevel(log.level || 'info')}
                 </span>
+                {log.container_name && (
+                  <span className="badge bg-info text-dark me-2">
+                    {log.container_name}
+                  </span>
+                )}
                 <span className="log-message">{log.message}</span>
               </div>
             ))}

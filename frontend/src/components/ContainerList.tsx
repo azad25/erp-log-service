@@ -124,7 +124,7 @@ const ContainerList: React.FC<ContainerListProps> = ({
                       <i className={`bi ${isRunning ? 'bi-play-circle text-success' : 'bi-stop-circle text-danger'} me-2`}></i>
                       <span className="text-truncate" style={{ color: '#3498db' }}>{container.name.replace('erp-suite-', '')}</span>
                     </h6>
-                    <p className="mb-0 small text-truncate" style={{ color: 'white' }}>{container.image}</p>
+                    <p className="mb-0 small text-truncate fw-bold text-uppercase" style={{ color: 'white', fontSize: '0.7rem', letterSpacing: '0.5px' }}>{container.image}</p>
                   </div>
                   <div className="text-end d-flex align-items-center gap-2">
                     <button
@@ -177,7 +177,7 @@ const ContainerList: React.FC<ContainerListProps> = ({
                       <i className={`bi ${isRunning ? 'bi-database text-info' : 'bi-stop-circle text-danger'} me-2`}></i>
                       <span className="text-truncate">{container.name.replace('erp-suite-', '')}</span>
                     </h6>
-                    <p className="mb-0 small text-truncate" style={{ color: 'white' }}>{container.image}</p>
+                    <p className="mb-0 small text-truncate fw-bold text-uppercase" style={{ color: 'white', fontSize: '0.7rem', letterSpacing: '0.5px' }}>{container.image}</p>
                   </div>
                   <div className="text-end d-flex align-items-center gap-2">
                     <button

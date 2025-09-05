@@ -339,8 +339,11 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
                           bg={getLogLevelColor(log.level || 'info')} 
                           className="me-2" 
                           style={{
-                            backgroundColor: getLogLevelColor(log.level || 'info') === 'success' ? '#d4edda' : undefined,
-                            color: getLogLevelColor(log.level || 'info') === 'success' ? '#155724' : 'white'
+                            backgroundColor: getLogLevelColor(log.level || 'info') === 'success' ? '#28a745' : undefined,
+                            color: 'white',
+                            fontWeight: '500',
+                            fontSize: '0.8em',
+                            padding: '0.35em 0.65em'
                           }}
                         >
                           {log.level || 'INFO'}

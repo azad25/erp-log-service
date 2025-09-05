@@ -19,10 +19,32 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children, 
   const reconnectAttempts = useRef(0);
   const maxReconnectAttempts = 5;
   const reconnectTimeout = useRef<NodeJS.Timeout | null>(null);
+  const pingInterval = useRef<NodeJS.Timeout | null>(null);
+  const pongTimeout = useRef<NodeJS.Timeout | null>(null);
+  const isClosing = useRef(false);
+
+  const PING_INTERVAL = 30000; // 30 seconds
+  const PONG_TIMEOUT = 5000;   // 5 seconds
+  const RECONNECT_DELAY = 1000; // Base delay for reconnection
 
   const connect = useCallback(() => {
+    // Clear any existing connection
     if (ws.current) {
-      ws.current.close();
+      ws.current.onopen = null;
+      ws.current.onclose = null;
+      ws.current.onerror = null;
+      ws.current.onmessage = null;
+      
+      try {
+        if (ws.current.readyState === WebSocket.OPEN) {
+          ws.current.close(1000, 'Reconnecting...');
+        } else {
+          ws.current.close();
+        }
+      } catch (error) {
+        console.error('Error closing WebSocket:', error);
+      }
+      ws.current = null;
     }
 
     // In development, connect directly to the backend server
@@ -38,12 +60,11 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children, 
     let wsUrl: string;
     
     if (process.env.REACT_APP_WS_URL) {
-      // If WS URL is explicitly set in environment, use it
       wsUrl = `${process.env.REACT_APP_WS_URL}/ws/logs/${containerId}`;
     } else if (isDev) {
       // In development, connect directly to the backend server
       const host = window.location.hostname;
-      const port = '8093'; // Default backend port
+      const port = '8093';
       wsUrl = `${wsProtocol}//${host}:${port}/ws/logs/${containerId}`;
     } else {
       // In production, use the same host as the frontend
@@ -57,27 +78,55 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children, 
     console.log('Connecting to WebSocket:', cleanWsUrl);
     ws.current = new WebSocket(cleanWsUrl);
     
-    // Set up periodic heartbeat
-    const heartbeatInterval = setInterval(() => {
-      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-        try {
-          ws.current.send(JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }));
-        } catch (error) {
-          console.error('Error sending heartbeat:', error);
+    // Configure WebSocket with binary type for better performance
+    ws.current.binaryType = 'arraybuffer';
+    
+    const setupPing = () => {
+      if (pingInterval.current) clearInterval(pingInterval.current);
+      
+      pingInterval.current = setInterval(() => {
+        if (ws.current?.readyState === WebSocket.OPEN) {
+          try {
+            ws.current.send('ping');
+            
+            // Set a timeout for pong
+            if (pongTimeout.current) clearTimeout(pongTimeout.current);
+            pongTimeout.current = setTimeout(() => {
+              console.warn('Pong timeout, reconnecting...');
+              if (ws.current) {
+                ws.current.close(4000, 'Pong timeout');
+              }
+            }, PONG_TIMEOUT);
+            
+          } catch (error) {
+            console.error('Error sending ping:', error);
+          }
         }
-      }
-    }, 30000); // Send heartbeat every 30 seconds
+      }, PING_INTERVAL);
+    };
 
     ws.current.onopen = (event) => {
       console.log('WebSocket connected successfully');
       console.debug('WebSocket connection details:', {
         url: ws.current?.url,
         protocol: ws.current?.protocol,
-        extensions: ws.current?.extensions,
-        binaryType: ws.current?.binaryType
+        readyState: ws.current?.readyState
       });
+      
       setIsConnected(true);
       reconnectAttempts.current = 0;
+      isClosing.current = false;
+      
+      // Start ping/pong after short delay
+      setTimeout(() => setupPing(), 1000);
+      
+      // Request initial log batch if needed
+      if (ws.current?.readyState === WebSocket.OPEN) {
+        ws.current.send(JSON.stringify({
+          type: 'init',
+          timestamp: Date.now()
+        }));
+      }
     };
 
     ws.current.onerror = (error) => {
@@ -93,82 +142,127 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children, 
         code: event.code,
         reason: event.reason
       });
-      setIsConnected(false);
-      clearInterval(heartbeatInterval);
       
-      // Attempt to reconnect with exponential backoff
-      if (reconnectAttempts.current < maxReconnectAttempts) {
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
-        console.log(`Attempting to reconnect in ${delay}ms (attempt ${reconnectAttempts.current + 1}/${maxReconnectAttempts})`);
-        
-        reconnectTimeout.current = setTimeout(() => {
-          reconnectAttempts.current++;
-          connect();
-        }, delay);
-      } else {
-        console.error('Max reconnection attempts reached');
+      setIsConnected(false);
+      
+      // Clear intervals and timeouts
+      if (pingInterval.current) clearInterval(pingInterval.current);
+      if (pongTimeout.current) clearTimeout(pongTimeout.current);
+      
+      // Don't reconnect on normal closure or if closing intentionally
+      if (event.code === 1000 || isClosing.current) {
+        console.log('WebSocket connection closed normally');
+        return;
       }
+      
+      // Don't attempt to reconnect if we've exceeded max attempts
+      if (reconnectAttempts.current >= maxReconnectAttempts) {
+        console.error('Max reconnection attempts reached');
+        return;
+      }
+      
+      // Calculate backoff delay with jitter
+      const baseDelay = Math.min(
+        RECONNECT_DELAY * Math.pow(2, reconnectAttempts.current),
+        30000 // Max 30 seconds
+      );
+      const jitter = Math.random() * 1000; // Add up to 1s jitter
+      const delay = Math.floor(baseDelay + jitter);
+      
+      reconnectAttempts.current++;
+      
+      console.log(`Attempting to reconnect in ${delay}ms (attempt ${reconnectAttempts.current}/${maxReconnectAttempts})`);
+      
+      // Attempt to reconnect with backoff
+      reconnectTimeout.current = setTimeout(() => {
+        if (!isClosing.current) {
+          connect();
+        }
+      }, delay);
     };
 
     ws.current.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data);
-        onMessage(data);
-      } catch (error) {
-        console.error('Error parsing WebSocket message:', error);
-      }
-    };
-
-    ws.current.onclose = () => {
-      console.log('WebSocket disconnected');
-      setIsConnected(false);
-      
-      // Attempt to reconnect with exponential backoff
-      if (reconnectAttempts.current < maxReconnectAttempts) {
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
-        reconnectAttempts.current++;
+        // Handle binary messages (if any)
+        if (typeof event.data !== 'string') {
+          console.warn('Received binary WebSocket message, expected text');
+          return;
+        }
         
-        reconnectTimeout.current = setTimeout(() => {
-          console.log(`Attempting to reconnect (${reconnectAttempts.current}/${maxReconnectAttempts})`);
-          connect();
-        }, delay);
+        // Handle control messages
+        if (event.data === 'pong') {
+          if (pongTimeout.current) {
+            clearTimeout(pongTimeout.current);
+            pongTimeout.current = null;
+          }
+          return;
+        }
+        
+        if (event.data === 'ping') {
+          if (ws.current?.readyState === WebSocket.OPEN) {
+            ws.current.send('pong');
+          }
+          return;
+        }
+        
+        // Handle data messages
+        try {
+          const data = JSON.parse(event.data);
+          
+          // Process batched messages if needed
+          if (Array.isArray(data)) {
+            data.forEach((item) => onMessage(item));
+          } else {
+            onMessage(data);
+          }
+          
+          // Reset reconnect attempts on successful message
+          if (reconnectAttempts.current > 0) {
+            reconnectAttempts.current = 0;
+          }
+        } catch (parseError) {
+          console.error('Error parsing WebSocket message:', parseError, event.data);
+        }
+      } catch (error) {
+        console.error('Error in WebSocket message handler:', error);
       }
-    };
-
-    ws.current.onerror = (error) => {
-      console.error('WebSocket error:', error);
     };
   }, [onMessage]);
 
-  // Connect on mount and clean up on unmount
+  // Initialize WebSocket connection on mount and clean up on unmount
   useEffect(() => {
     connect();
 
     return () => {
+      isClosing.current = true;
+      
+      // Clear all timeouts and intervals
+      if (reconnectTimeout.current) clearTimeout(reconnectTimeout.current);
+      if (pingInterval.current) clearInterval(pingInterval.current);
+      if (pongTimeout.current) clearTimeout(pongTimeout.current);
+      
+      // Close WebSocket connection
       if (ws.current) {
-        ws.current.close();
-      }
-      if (reconnectTimeout.current) {
-        clearTimeout(reconnectTimeout.current);
+        ws.current.close(1000, 'Component unmounting');
       }
     };
   }, [connect]);
 
   const sendMessage = useCallback((message: any) => {
-    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-      ws.current.send(JSON.stringify(message));
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      try {
+        const messageStr = typeof message === 'string' ? message : JSON.stringify(message);
+        ws.current.send(messageStr);
+      } catch (error) {
+        console.error('Error sending WebSocket message:', error);
+      }
     } else {
-      console.warn('WebSocket is not connected');
+      console.warn('Cannot send message - WebSocket is not connected');
     }
   }, []);
 
-  const value = {
-    sendMessage,
-    isConnected,
-  };
-
   return (
-    <WebSocketContext.Provider value={value}>
+    <WebSocketContext.Provider value={{ sendMessage, isConnected }}>
       {children}
     </WebSocketContext.Provider>
   );

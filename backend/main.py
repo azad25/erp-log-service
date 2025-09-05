@@ -11,7 +11,7 @@ import signal
 import asyncio
 import sys
 
-# Configure logging
+# Configure logging with better formatting
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper()),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -21,85 +21,111 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Global health check task
+health_check_task = None
+
 # Handle graceful shutdown
 async def shutdown_event():
-    """Handle application shutdown"""
+    """Handle application shutdown with proper cleanup"""
     logger.info("Shutting down...")
-    streamer = get_log_streamer()
-    if streamer:
-        await streamer.stop_all()
-    logger.info("Log streamer stopped")
+    
+    # Cancel health check task
+    global health_check_task
+    if health_check_task and not health_check_task.done():
+        health_check_task.cancel()
+        try:
+            await health_check_task
+        except asyncio.CancelledError:
+            pass
+    
+    # Stop log streamer
+    try:
+        streamer = get_log_streamer()
+        if streamer:
+            await streamer.stop_all()
+        logger.info("Log streamer stopped successfully")
+    except Exception as e:
+        logger.error(f"Error stopping log streamer: {str(e)}")
 
-# Handle startup event
+# Handle startup event with log service initialization
 async def startup_event():
-    """Handle application startup"""
+    """Handle application startup with log service initialization"""
     logger.info("Starting up...")
-    # Initialize any required services here
+    
+    try:
+        # Initialize log streamer
+        streamer = get_log_streamer()
+        
+        # Pre-warm Docker CLI connection
+        docker_available = streamer._get_docker_client()
+        if docker_available:
+            logger.info("Log service initialized successfully with Docker CLI access")
+        else:
+            logger.warning("Log service initialized but Docker CLI access failed")
+        
+        # Start periodic health check
+        global health_check_task
+        health_check_task = asyncio.create_task(periodic_websocket_health_check())
+        
+        logger.info("Startup completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Error during startup: {str(e)}")
+        raise
 
-# Create FastAPI app
+async def periodic_websocket_health_check():
+    """Run periodic health checks on WebSocket connections"""
+    try:
+        streamer = get_log_streamer()
+        while True:
+            await asyncio.sleep(30)  # Check every 30 seconds
+            try:
+                await streamer.check_websocket_health()
+            except Exception as e:
+                logger.error(f"Error in WebSocket health check: {str(e)}")
+    except asyncio.CancelledError:
+        logger.info("WebSocket health check task cancelled")
+    except Exception as e:
+        logger.error(f"Critical error in health check: {str(e)}")
+
+# Create FastAPI app with lifespan events
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    await startup_event()
+    yield
+    # Shutdown
+    await shutdown_event()
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="Real-time Docker Log Viewer API",
     version=settings.VERSION,
-    on_startup=[startup_event],
-    on_shutdown=[shutdown_event]
+    lifespan=lifespan
 )
 
-# Configure CORS middleware
-# Note: CORS doesn't actually apply to WebSocket connections, but we need it for HTTP
+# Configure CORS middleware with optimized settings
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # In production, replace with specific origins
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["*"]
 )
 
-# Middleware to handle WebSocket upgrade requests
-# This middleware needs to be careful not to interfere with WebSocket connections
+# Simplified middleware for WebSocket support
 @app.middleware("http")
-async def websocket_upgrade_middleware(request, call_next):
-    # Skip middleware for WebSocket connections
-    if "upgrade" in request.headers.get("connection", "").lower() and \
-       request.headers.get("upgrade", "").lower() == "websocket":
-        return await call_next(request)
-        
-    # Handle WebSocket upgrade requests
-    if "upgrade" in request.headers.get("connection", "").lower() and \
-       request.headers.get("upgrade", "").lower() == "websocket":
-        # Get the subprotocols if any
-        subprotocols = []
-        if "sec-websocket-protocol" in request.headers:
-            subprotocols = [p.strip() for p in request.headers["sec-websocket-protocol"].split(",")]
-        
-        # Create a new response for the WebSocket handshake
-        response = await call_next(request)
-        
-        # Add required WebSocket headers
-        response.headers["Upgrade"] = "websocket"
-        response.headers["Connection"] = "Upgrade"
-        response.headers["Sec-WebSocket-Accept"] = request.headers.get("sec-websocket-key", "")
-        
-        # Add CORS headers for WebSocket connections
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "*"
-        
-        # If client sent subprotocols, accept the first one
-        if subprotocols:
-            response.headers["Sec-WebSocket-Protocol"] = subprotocols[0]
-            
-        return response
-    
-    # For regular HTTP requests, just call the next middleware
+async def add_cors_headers(request, call_next):
+    """Add CORS headers for all requests including WebSocket upgrades"""
     response = await call_next(request)
     
-    # Add CORS headers for regular HTTP requests to WebSocket endpoints
-    if request.url.path.startswith(f"{settings.API_V1_STR}/ws/"):
+    # Add CORS headers for WebSocket endpoints
+    if request.url.path.startswith("/ws/") or request.url.path.startswith(f"{settings.API_V1_STR}/ws/"):
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
     
     return response
 
@@ -107,19 +133,51 @@ async def websocket_upgrade_middleware(request, call_next):
 app.state.settings = settings
 
 # Include API routes
-from app.api import api_router
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
-# Register WebSocket endpoint at the root level
+# Import logs router for WebSocket endpoints
 from app.api.endpoints import logs
 
+# Register WebSocket endpoint at the app level (not in router)
 @app.websocket("/ws/logs/{container_id}")
-async def websocket_endpoint(websocket: WebSocket, container_id: str):
+async def websocket_endpoint_root(websocket: WebSocket, container_id: str):
+    """Root level WebSocket endpoint for direct access"""
     return await logs.websocket_endpoint(websocket, container_id)
+
+# Also register under API prefix for consistency
+@app.websocket(f"{settings.API_V1_STR}/ws/logs/{{container_id}}")
+async def websocket_endpoint_api(websocket: WebSocket, container_id: str):
+    """API prefixed WebSocket endpoint"""
+    return await logs.websocket_endpoint(websocket, container_id)
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    try:
+        streamer = get_log_streamer()
+        docker_available = streamer._get_docker_client() is not None
+        
+        return {
+            "status": "healthy",
+            "service": settings.PROJECT_NAME,
+            "version": settings.VERSION,
+            "docker_available": docker_available,
+            "active_containers": len(streamer.active_containers) if streamer else 0,
+            "active_websockets": sum(len(ws_set) for ws_set in streamer.websockets.values()) if streamer else 0
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "service": settings.PROJECT_NAME,
+            "version": settings.VERSION
+        }
 
 # Debug endpoint to list all routes
 @app.get("/debug/routes")
 async def debug_routes():
+    """Debug endpoint to show all registered routes"""
     routes = []
     for route in app.routes:
         route_info = {
@@ -127,41 +185,113 @@ async def debug_routes():
             "name": getattr(route, "name", ""),
             "methods": getattr(route, "methods", []),
             "endpoint": route.endpoint.__name__ if hasattr(route, "endpoint") else "",
-            "type": "websocket" if hasattr(route, "is_websocket") and route.is_websocket else "http"
+            "type": "websocket" if hasattr(route, "endpoint") and "websocket" in route.endpoint.__name__.lower() else "http"
         }
         routes.append(route_info)
-    return {"routes": routes}
+    return {"routes": routes, "total": len(routes)}
 
-# Root endpoint
+# Debug endpoint for WebSocket connections
+@app.get("/debug/websockets")
+async def debug_websockets():
+    """Debug endpoint to show active WebSocket connections"""
+    try:
+        streamer = get_log_streamer()
+        connections = {}
+        
+        for container_id, ws_set in streamer.websockets.items():
+            connections[container_id] = {
+                "count": len(ws_set),
+                "container_active": container_id in streamer.active_containers,
+                "has_logs": container_id in streamer.log_buffer,
+                "log_count": len(streamer.log_buffer.get(container_id, []))
+            }
+        
+        return {
+            "connections": connections,
+            "total_connections": sum(len(ws_set) for ws_set in streamer.websockets.values()),
+            "active_containers": list(streamer.active_containers),
+            "active_tasks": len(streamer.active_tasks)
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+# Root endpoint with comprehensive information
 @app.get("/")
 async def root():
+    """Root endpoint with service information"""
     return {
         "name": settings.PROJECT_NAME,
         "version": settings.VERSION,
-        "docs": "/docs",
-        "websocket": f"ws://{settings.HOST}:{settings.PORT}/ws/logs/{{container_id}}",
-        "debug_routes": "/debug/routes"
+        "status": "running",
+        "endpoints": {
+            "docs": "/docs",
+            "health": "/health",
+            "websocket_root": f"ws://{settings.HOST}:{settings.PORT}/ws/logs/{{container_id}}",
+            "websocket_api": f"ws://{settings.HOST}:{settings.PORT}{settings.API_V1_STR}/ws/logs/{{container_id}}",
+            "containers": f"{settings.API_V1_STR}/logs/containers",
+            "debug_routes": "/debug/routes",
+            "debug_websockets": "/debug/websockets"
+        },
+        "cors_enabled": True,
+        "websocket_health_check": "enabled"
     }
+
+# Signal handlers for graceful shutdown
+def handle_sigterm(signum, frame):
+    """Handle SIGTERM signal"""
+    logger.info("Received SIGTERM signal")
+    sys.exit(0)
+
+def handle_sigint(signum, frame):
+    """Handle SIGINT signal (Ctrl+C)"""
+    logger.info("Received SIGINT signal")
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGTERM, handle_sigterm)
+signal.signal(signal.SIGINT, handle_sigint)
 
 if __name__ == "__main__":
     import uvicorn
     import sys
     
-    # Parse command line arguments for port override
+    # Parse command line arguments for configuration override
     port = settings.PORT
     host = settings.HOST
+    reload = False
+    log_level = settings.LOG_LEVEL.lower()
     
-    for i, arg in enumerate(sys.argv):
+    i = 1
+    while i < len(sys.argv):
+        arg = sys.argv[i]
         if arg == "--port" and i + 1 < len(sys.argv):
             port = int(sys.argv[i + 1])
+            i += 2
         elif arg == "--host" and i + 1 < len(sys.argv):
             host = sys.argv[i + 1]
+            i += 2
+        elif arg == "--reload":
+            reload = True
+            i += 1
+        elif arg == "--log-level" and i + 1 < len(sys.argv):
+            log_level = sys.argv[i + 1].lower()
+            i += 2
+        else:
+            i += 1
     
+    logger.info(f"Starting {settings.PROJECT_NAME} v{settings.VERSION}")
+    logger.info(f"Host: {host}, Port: {port}, Log Level: {log_level.upper()}")
+    logger.info(f"Reload: {reload}, Workers: 1 (required for WebSocket)")
+    
+    # Run the application
     uvicorn.run(
         "main:app",
         host=host,
         port=port,
-        reload=False,  # Disable reload in production
-        log_level=settings.LOG_LEVEL.lower(),
-        workers=1  # Required for WebSocket support
+        reload=reload,
+        log_level=log_level,
+        workers=1,  # Required for WebSocket support
+        access_log=True,
+        use_colors=True,
+        loop="asyncio"  # Explicitly use asyncio loop
     )
