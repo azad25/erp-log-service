@@ -3,319 +3,229 @@ import json
 import logging
 import time
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException
-from app.core.config import settings
-from app.services.log_processor import LogProcessor
-from app.services.log_streamer import get_log_streamer
+from typing import List, Dict, Any
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 
-# Create separate routers for HTTP and WebSocket
+from app.core.config import settings
+from app.services.log_streamer import get_log_streamer
+from app.services.docker import get_docker_service
+from app.core.connection_manager import manager  # ✅ use optimized manager
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# WebSocket endpoint will be registered directly in the main app
 
 @router.websocket("/ws/logs/{container_id}")
 async def websocket_endpoint(websocket: WebSocket, container_id: str):
-    """WebSocket endpoint for streaming logs
-    
-    Args:
-        websocket: The WebSocket connection
-        container_id: ID of the container to stream logs from, or 'all' for all containers
-    
-    Handles the WebSocket lifecycle including:
-    - Connection acceptance
-    - Initial handshake
-    - Error handling
-    - Cleanup on disconnect
     """
-    log_streamer = None
-    connection_established = False
-    
+    WebSocket endpoint for streaming logs from a single container or all containers.
+    Features:
+    - Multi-container subscription
+    - Uses global ConnectionManager for health & keep-alive
+    - Graceful cleanup on disconnect
+    - Initial confirmation + filter/subscribe support
+    """
+    log_streamer = get_log_streamer()
+    active_containers = set()
+
     try:
-        # Accept the WebSocket connection
-        await websocket.accept()
-        connection_established = True
-        logger.info(f"WebSocket connection accepted for container {container_id}")
-        
-        # Get the log streamer instance early
-        log_streamer = get_log_streamer()
-        
-        # Send initial connection confirmation
+        # Expand "all" to every container
+        target_containers = [container_id]
+        if container_id == "all":
+            containers = await log_streamer.processor.get_containers()
+            target_containers = [c["id"] for c in containers]
+
+        # Subscribe websocket to containers
+        for cid in target_containers:
+            try:
+                await manager.connect(websocket, cid)
+                await log_streamer.add_websocket(websocket, cid)
+                active_containers.add(cid)
+            except Exception as e:
+                logger.error(f"Failed to connect to container {cid}: {e}")
+
+        if not active_containers:
+            await websocket.close(code=1008, reason="No valid containers")
+            return
+
+        logger.info(f"WebSocket connected to {len(active_containers)} containers")
+
+        # Initial handshake
         await websocket.send_json({
             "type": "connection_established",
-            "message": "Connected to WebSocket server",
-            "container_id": container_id,
-            "timestamp": datetime.utcnow().isoformat()
+            "containers": list(active_containers),
+            "timestamp": datetime.utcnow().isoformat(),
         })
-        
-        # Handle the WebSocket connection
-        await websocket_logs(websocket, container_id, log_streamer)
-        
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket client disconnected for container {container_id}")
-        
-    except Exception as e:
-        error_msg = f"WebSocket error for container {container_id}: {str(e)}"
-        logger.error(error_msg, exc_info=True)
-        
-        if connection_established:
-            try:
-                await websocket.close(code=1011, reason=error_msg[:123])
-            except Exception:
-                pass  # Connection already closed
-                
-    finally:
-        # Cleanup resources only once
-        if log_streamer and connection_established:
-            try:
-                await log_streamer.remove_websocket(websocket, container_id)
-                logger.info(f"WebSocket connection cleaned up for container {container_id}")
-            except Exception as e:
-                logger.error(f"Error during WebSocket cleanup: {str(e)}")
 
-async def websocket_logs(websocket: WebSocket, container_id: str, log_streamer):
-    """Handle WebSocket connection for streaming logs
-    
-    Args:
-        websocket: The WebSocket connection
-        container_id: ID of the container to stream logs from, or 'all' for all containers
-        log_streamer: Pre-initialized log streamer instance
-    """
-    last_activity = time.time()
-    heartbeat_interval = 60  # Send heartbeat every 60 seconds
-    
-    try:
-        # Add WebSocket to active connections
-        await log_streamer.add_websocket(websocket, container_id)
-        logger.info(f"Added WebSocket for container {container_id}")
-        
-        # Create background task for heartbeat
-        heartbeat_task = asyncio.create_task(
-            heartbeat_handler(websocket, heartbeat_interval)
-        )
-        
-        try:
-            # Keep connection alive with non-blocking message handling
-            while True:
-                try:
-                    # Use a longer timeout and handle it gracefully
-                    data = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
-                    last_activity = time.time()
-                    
-                    # Process message in non-blocking way
-                    asyncio.create_task(process_websocket_message(websocket, data, container_id))
-                    
-                except asyncio.TimeoutError:
-                    # This is normal - just continue the loop
-                    # Check if connection is still alive periodically
-                    current_time = time.time()
-                    if current_time - last_activity > 300:  # 5 minutes of inactivity
-                        logger.info(f"WebSocket inactive for 5 minutes, checking connection for {container_id}")
-                        try:
-                            await websocket.ping()
-                            last_activity = current_time
-                        except Exception:
-                            logger.info(f"WebSocket ping failed, closing connection for {container_id}")
-                            break
-                    continue
-                    
-                except WebSocketDisconnect:
-                    logger.info(f"WebSocket disconnected for container {container_id}")
-                    break
-                    
-        finally:
-            # Cancel heartbeat task
-            heartbeat_task.cancel()
-            try:
-                await heartbeat_task
-            except asyncio.CancelledError:
-                pass
-                
-    except Exception as e:
-        logger.error(f"WebSocket error for container {container_id}: {str(e)}", exc_info=True)
-        try:
-            await websocket.close(code=1011, reason=str(e)[:123])
-        except Exception:
-            pass  # Connection already closed
-
-async def heartbeat_handler(websocket: WebSocket, interval: int):
-    """Send periodic heartbeat to keep connection alive"""
-    try:
+        # Main loop
         while True:
-            await asyncio.sleep(interval)
             try:
-                await websocket.send_json({
-                    "type": "heartbeat",
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-            except Exception as e:
-                logger.debug(f"Heartbeat failed: {str(e)}")
-                break
-    except asyncio.CancelledError:
-        pass
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=30.0)
 
-async def process_websocket_message(websocket: WebSocket, data: str, container_id: str):
-    """Process WebSocket message asynchronously"""
-    try:
-        # Handle simple ping/pong
-        if data.strip() == "ping":
-            await websocket.send_text("pong")
-            return
-            
-        # Handle JSON messages
+                if not isinstance(data, dict):
+                    continue
+
+                msg_type = data.get("type")
+
+                if msg_type == "pong":
+                    manager.update_activity(websocket)
+
+                elif msg_type == "subscribe":
+                    new_cid = data.get("container_id")
+                    if new_cid and new_cid not in active_containers:
+                        try:
+                            await manager.connect(websocket, new_cid)
+                            await log_streamer.add_websocket(websocket, new_cid)
+                            active_containers.add(new_cid)
+                            await websocket.send_json({
+                                "type": "subscription_confirmed",
+                                "container_id": new_cid,
+                                "timestamp": datetime.utcnow().isoformat(),
+                            })
+                            logger.info(f"Subscribed to container {new_cid}")
+                        except Exception as e:
+                            await websocket.send_json({
+                                "type": "subscription_error",
+                                "container_id": new_cid,
+                                "error": str(e),
+                                "timestamp": datetime.utcnow().isoformat(),
+                            })
+
+                elif msg_type == "filter":
+                    filters = data.get("filters", {})
+                    logger.debug(f"Filters applied for {container_id}: {filters}")
+                    # TODO: integrate with log_streamer filtering
+
+            except asyncio.TimeoutError:
+                # Normal idle timeout, loop continues
+                continue
+            except WebSocketDisconnect:
+                break
+            except json.JSONDecodeError:
+                logger.warning("Invalid JSON from client")
+                continue
+            except Exception as e:
+                logger.error(f"Message loop error: {e}")
+                break
+
+    except WebSocketDisconnect:
+        logger.info(f"Client disconnected: {active_containers}")
+    finally:
+        # Cleanup
+        for cid in active_containers:
+            try:
+                await log_streamer.remove_websocket(websocket, cid)
+            except Exception as e:
+                logger.error(f"Cleanup error for {cid}: {e}")
+
+        await manager.disconnect(websocket)
         try:
-            message = json.loads(data)
-            message_type = message.get("type")
-            
-            if message_type == "ping":
-                await websocket.send_json({
-                    "type": "pong",
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-            elif message_type == "update_filters":
-                # Handle filter updates if needed
-                logger.info(f"Received filter update for {container_id}: {message}")
-                await websocket.send_json({
-                    "type": "filter_updated",
-                    "message": "Filters updated successfully"
-                })
-            elif message_type == "get_status":
-                # Send current status
-                await websocket.send_json({
-                    "type": "status",
-                    "container_id": container_id,
-                    "connected": True,
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-            else:
-                logger.warning(f"Unknown message type: {message_type}")
-                
-        except json.JSONDecodeError:
-            logger.warning(f"Received invalid JSON from {container_id}: {data}")
-            await websocket.send_json({
-                "type": "error",
-                "message": "Invalid JSON format",
-                "timestamp": datetime.utcnow().isoformat()
-            })
-            
-    except Exception as e:
-        logger.error(f"Error processing message for {container_id}: {str(e)}")
-        try:
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Error processing message: {str(e)}",
-                "timestamp": datetime.utcnow().isoformat()
-            })
+            await websocket.close()
         except Exception:
-            pass  # Connection might be closed
+            pass
+
+
+@router.get("/ws/stats")
+async def get_websocket_stats():
+    """WebSocket connection stats from ConnectionManager"""
+    stats = await manager.get_stats()
+    return {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "connections": stats,
+    }
+
 
 @router.get("/containers", response_model=List[Dict[str, Any]])
 async def list_containers():
-    """List all running Docker containers"""
+    """List running Docker containers"""
     try:
-        streamer = get_log_streamer()
-        return await streamer.processor.get_containers()
+        docker_service = get_docker_service()
+        if not docker_service.is_available:
+            if not await docker_service.verify_connection():
+                raise HTTPException(
+                    status_code=503,
+                    detail="Docker service is not available"
+                )
+        containers = await docker_service.get_containers(all=True)
+        if not containers:
+            logger.warning("No containers found or Docker service returned empty list")
+        return containers
     except Exception as e:
-        logger.error(f"Error listing containers: {str(e)}")
+        logger.error(f"Error listing containers: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/logs/{container_id}", response_model=List[Dict[str, Any]])
-async def get_recent_logs(container_id: str, limit: int = 100):
-    """Get recent logs for a container"""
+
+@router.get("/{container_id}", response_model=List[Dict[str, Any]])
+async def get_recent_logs(container_id: str, tail: int = 100, since: str = None, timestamps: bool = True):
+    """Fetch recent logs from a container"""
     try:
-        streamer = get_log_streamer()
-        if container_id in streamer.log_buffer:
-            logs = streamer.log_buffer[container_id]
-            # Return last N logs efficiently
-            return logs[-limit:] if len(logs) > limit else logs
-        return []
+        docker_service = get_docker_service()
+        logs = await docker_service.get_container_logs(
+            container_id,
+            tail=tail,
+            since=since,
+            timestamps=timestamps
+        )
+        return logs
     except Exception as e:
-        logger.error(f"Error getting recent logs for {container_id}: {str(e)}")
+        logger.error(f"Error getting logs for container {container_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/logs/{container_id}/stream")
-async def stream_logs(container_id: str, lines: int = 100, follow: bool = False):
-    """Stream logs for a container"""
+
+@router.post("/containers/{container_id}/exec")
+async def execute_command(container_id: str, command: str, workdir: str = None):
+    """Execute a command in a container"""
     try:
-        streamer = get_log_streamer()
-        
-        # Try to get logs from buffer first
-        if container_id in streamer.log_buffer:
-            logs = streamer.log_buffer[container_id]
-            selected_logs = logs[-lines:] if len(logs) > lines else logs
-        else:
-            # Generate mock data more efficiently
-            current_time = datetime.utcnow()
-            selected_logs = []
-            
-            for i in range(min(lines, 10)):  # Limit mock data
-                log_time = current_time.replace(second=current_time.second - i)
-                selected_logs.append({
-                    "timestamp": log_time.isoformat() + "Z",
-                    "level": "INFO" if i % 3 != 2 else "WARN",
-                    "message": f"Mock log entry {i + 1} for container {container_id}",
-                    "source": "container"
-                })
-            
-            # Reverse to get chronological order
-            selected_logs.reverse()
-        
-        return {
-            "container_id": container_id,
-            "logs": selected_logs,
-            "total": len(selected_logs),
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
+        docker_service = get_docker_service()
+        # Note: execute_command method doesn't exist in DockerService yet
+        # For now, return a not implemented error
+        raise HTTPException(status_code=501, detail="Execute command functionality not yet implemented")
     except Exception as e:
-        logger.error(f"Error streaming logs for {container_id}: {str(e)}")
+        logger.error(f"Error executing command in container {container_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/containers/{container_id}/start")
 async def start_container(container_id: str):
     """Start a Docker container"""
     try:
-        streamer = get_log_streamer()
-        result = await streamer.processor.start_container(container_id)
-        return {
-            "status": "success", 
-            "message": result,
-            "container_id": container_id,
-            "timestamp": datetime.utcnow().isoformat()
-        }
+        docker_service = get_docker_service()
+        success = await docker_service.start_container(container_id)
+        if success:
+            return {"status": "success", "message": f"Container {container_id} started successfully"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to start container")
     except Exception as e:
-        logger.error(f"Error starting container {container_id}: {str(e)}")
+        logger.error(f"Error starting container {container_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/containers/{container_id}/stop")
 async def stop_container(container_id: str):
     """Stop a Docker container"""
     try:
-        streamer = get_log_streamer()
-        result = await streamer.processor.stop_container(container_id)
-        return {
-            "status": "success", 
-            "message": result,
-            "container_id": container_id,
-            "timestamp": datetime.utcnow().isoformat()
-        }
+        docker_service = get_docker_service()
+        success = await docker_service.stop_container(container_id)
+        if success:
+            return {"status": "success", "message": f"Container {container_id} stopped successfully"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to stop container")
     except Exception as e:
-        logger.error(f"Error stopping container {container_id}: {str(e)}")
+        logger.error(f"Error stopping container {container_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/containers/{container_id}/restart")
 async def restart_container(container_id: str):
     """Restart a Docker container"""
     try:
-        streamer = get_log_streamer()
-        result = await streamer.processor.restart_container(container_id)
-        return {
-            "status": "success", 
-            "message": result,
-            "container_id": container_id,
-            "timestamp": datetime.utcnow().isoformat()
-        }
+        docker_service = get_docker_service()
+        success = await docker_service.restart_container(container_id)
+        if success:
+            return {"status": "success", "message": f"Container {container_id} restarted successfully"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to restart container")
     except Exception as e:
-        logger.error(f"Error restarting container {container_id}: {str(e)}")
+        logger.error(f"Error restarting container {container_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

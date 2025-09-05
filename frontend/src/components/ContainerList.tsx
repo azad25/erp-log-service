@@ -122,7 +122,9 @@ const ContainerList: React.FC<ContainerListProps> = ({
                   <div className="flex-grow-1">
                     <h6 className="mb-1 d-flex align-items-center">
                       <i className={`bi ${isRunning ? 'bi-play-circle text-success' : 'bi-stop-circle text-danger'} me-2`}></i>
-                      <span className="text-truncate" style={{ color: '#3498db' }}>{container.name.replace('erp-suite-', '')}</span>
+                      <span className="text-truncate" style={{ color: '#3498db' }}>
+                        {container.name ? container.name.replace('erp-suite-', '') : 'Unnamed'}
+                      </span>
                     </h6>
                     <p className="mb-0 small text-truncate fw-bold text-uppercase" style={{ color: 'white', fontSize: '0.7rem', letterSpacing: '0.5px' }}>{container.image}</p>
                   </div>

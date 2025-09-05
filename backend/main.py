@@ -2,11 +2,13 @@ import logging
 import uvicorn
 import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.api import api_router
 from app.services.log_streamer import get_log_streamer
+from app.api.endpoints.stats import websocket_stats_endpoint as stats_websocket
 import signal
 import asyncio
 import sys
@@ -135,20 +137,38 @@ app.state.settings = settings
 # Include API routes
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
-# Import logs router for WebSocket endpoints
+# Import routers for WebSocket endpoints
 from app.api.endpoints import logs
+from app.api.endpoints import stats
 
-# Register WebSocket endpoint at the app level (not in router)
+# Register log WebSocket endpoint at the app level
 @app.websocket("/ws/logs/{container_id}")
 async def websocket_endpoint_root(websocket: WebSocket, container_id: str):
-    """Root level WebSocket endpoint for direct access"""
+    """Root level WebSocket endpoint for logs"""
     return await logs.websocket_endpoint(websocket, container_id)
 
+# Register stats WebSocket endpoint at the app level
+@app.websocket("/ws/stats/{container_id}")
+async def websocket_stats_root(websocket: WebSocket, container_id: str):
+    """Root level WebSocket endpoint for container stats"""
+    return await stats.websocket_stats_endpoint(websocket, container_id)
+
 # Also register under API prefix for consistency
-@app.websocket(f"{settings.API_V1_STR}/ws/logs/{{container_id}}")
+@app.websocket("/api/v1/logs/ws/{container_id}")
 async def websocket_endpoint_api(websocket: WebSocket, container_id: str):
     """API prefixed WebSocket endpoint"""
-    return await logs.websocket_endpoint(websocket, container_id)
+    await websocket_endpoint_root(websocket, container_id)
+
+# Container stats WebSocket endpoints
+@app.websocket("/ws/stats/{container_id}")
+async def websocket_stats_root(websocket: WebSocket, container_id: str):
+    """Root level WebSocket endpoint for container stats"""
+    await stats_websocket(websocket, container_id)
+
+@app.websocket("/api/v1/logs/ws/stats/{container_id}")
+async def websocket_stats_api(websocket: WebSocket, container_id: str):
+    """API prefixed WebSocket endpoint for container stats"""
+    await stats_websocket(websocket, container_id)
 
 # Health check endpoint
 @app.get("/health")

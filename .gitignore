@@ -1,0 +1,10 @@
+Byte-compiled / optimized / DLL files
+pycache/
+*.pyc
+
+Distribution / packaging
+.Python
+env/
+venv/
+__pycache__
+*/*/__pycache__*/__pycache__

@@ -2,18 +2,26 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
-import reportWebVitals from './reportWebVitals';
+import { ContainerStatsProvider } from './contexts/ContainerStatsContext';
+import { WebSocketProvider } from './contexts/WebSocketContext';
+import { LogEntry } from './types/logs';
 
 const root = ReactDOM.createRoot(
   document.getElementById('root') as HTMLElement
 );
+
 root.render(
   <React.StrictMode>
-    <App />
+    <ContainerStatsProvider>
+      <WebSocketProvider onMessage={(log: LogEntry, containerId: string) => {
+        // Find all components listening for this containerId and update them
+        const event = new CustomEvent('logMessage', { 
+          detail: { log, containerId } 
+        });
+        window.dispatchEvent(event);
+      }}>
+        <App />
+      </WebSocketProvider>
+    </ContainerStatsProvider>
   </React.StrictMode>
 );
-
-// If you want to start measuring performance in your app, pass a function
-// to log results (for example: reportWebVitals(console.log))
-// or send to an analytics endpoint. Learn more: https://bit.ly/CRA-vitals
-reportWebVitals();

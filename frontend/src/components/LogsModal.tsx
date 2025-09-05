@@ -1,7 +1,13 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Modal, Button, Form, Badge, InputGroup } from 'react-bootstrap';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { Modal, Button, Badge, Row, Col, Form, InputGroup } from 'react-bootstrap';
+import { FaCircle, FaSearch, FaSync } from 'react-icons/fa';
 import { LogEntry } from '../types/logs';
-import { getLogs } from '../services/api';
+import { useLogMessages } from '../hooks/useLogMessages';
+
+// Type the icons to resolve TypeScript issues
+const CircleIcon = FaCircle as React.ComponentType<{ size?: number; className?: string }>;
+const SearchIcon = FaSearch as React.ComponentType<{ className?: string }>;
+const SyncIcon = FaSync as React.ComponentType<{ className?: string }>;
 
 interface LogsModalProps {
   show: boolean;
@@ -10,291 +16,260 @@ interface LogsModalProps {
   containerName: string;
 }
 
+// Constants for memory management
+const SCROLL_THRESHOLD = 50;
+
 const LogsModal: React.FC<LogsModalProps> = ({
   show,
   onHide,
   containerId,
   containerName
 }) => {
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [levelFilter, setLevelFilter] = useState('all');
-  const [autoScroll, setAutoScroll] = useState(true);
+  // Get logs and connection status from custom hook
+  const { 
+    logs, 
+    cleanup: cleanupLogs, 
+    isConnected: isContainerConnected,
+    isConnecting 
+  } = useLogMessages(containerId);
+  
+  // State management
+  const [searchTerm, setSearchTerm] = useState<string>('');
+  const [levelFilter, setLevelFilter] = useState<string>('all');
+  const [autoScroll, setAutoScroll] = useState<boolean>(true);
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  
+  // Refs for DOM elements
   const logsEndRef = useRef<HTMLDivElement>(null);
   const logsContainerRef = useRef<HTMLDivElement>(null);
-
-  const loadLogs = useCallback(async () => {
-    try {
-      setLoading(true);
-      const containerLogs = await getLogs(containerId, 500);
-      setLogs(containerLogs || []);
-    } catch (error) {
-      console.error('Error loading logs:', error);
-    } finally {
-      setLoading(false);
-    }
-  }, [containerId]);
-
+  
+    // Auto-scroll to bottom when new logs arrive, with performance optimization
   useEffect(() => {
-    if (show && containerId) {
-      loadLogs();
-    }
-  }, [show, containerId, loadLogs]);
-
-  useEffect(() => {
-    if (autoScroll && logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [logs, autoScroll]);
-
-
-  const loadMoreLogs = async () => {
-    try {
-      setLoading(true);
-      // In a real implementation, this would load older logs
-      const moreLogs = await getLogs(containerId, logs.length + 100);
-      setLogs(moreLogs || []);
-    } catch (error) {
-      console.error('Error loading more logs:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const filteredLogs = logs.filter(log => {
-    const matchesSearch = !searchTerm || 
-      (log.message && log.message.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (log.raw && log.raw.toLowerCase().includes(searchTerm.toLowerCase()));
-    
-    const matchesLevel = levelFilter === 'all' || 
-      (log.level && log.level.toLowerCase() === levelFilter.toLowerCase());
-    
-    return matchesSearch && matchesLevel;
-  });
-
-  const getLogLevelColor = (level: string) => {
-    switch (level?.toLowerCase()) {
-      case 'error':
-      case 'fatal':
-        return 'danger';
-      case 'warn':
-      case 'warning':
-        return 'warning';
-      case 'info':
-        return 'info';
-      case 'debug':
-        return 'secondary';
-      default:
-        return 'light';
-    }
-  };
-
-  const formatTime = (timestamp: string) => {
-    try {
-      const date = new Date(timestamp);
-      return date.toLocaleString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: true
+    if (autoScroll && logsEndRef.current && logs.length > 0) {
+      // Use requestAnimationFrame for smoother scrolling
+      const rafId = requestAnimationFrame(() => {
+        const scrollOptions = { behavior: logs.length > 100 ? 'auto' : 'smooth' as ScrollBehavior };
+        logsEndRef.current?.scrollIntoView(scrollOptions);
       });
-    } catch {
-      return timestamp;
+      
+      return () => cancelAnimationFrame(rafId);
     }
-  };
+  }, [logs.length, autoScroll]);
+  
+  // Handle scroll events to manage auto-scroll
+  const handleScroll = useCallback(() => {
+    if (!logsContainerRef.current) return;
+    
+    const { scrollTop, scrollHeight, clientHeight } = logsContainerRef.current;
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < SCROLL_THRESHOLD;
+    
+    setAutoScroll(prev => prev !== isNearBottom ? isNearBottom : prev);
+  }, []);
 
-  const handleScroll = () => {
-    if (logsContainerRef.current) {
-      const { scrollTop, scrollHeight, clientHeight } = logsContainerRef.current;
-      const isAtBottom = scrollTop + clientHeight >= scrollHeight - 10;
-      setAutoScroll(isAtBottom);
+  // Throttled scroll handler
+  const throttledScrollHandler = useMemo(() => {
+    let timeoutId: NodeJS.Timeout | null = null;
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(handleScroll, 50);
+    };
+  }, [handleScroll]);
+  
+  // Filter logs based on search term and level
+  const filteredLogs = useMemo(() => {
+    if (!searchTerm.trim() && levelFilter === 'all') {
+      return logs;
     }
-  };
+    
+    const searchTermLower = searchTerm.toLowerCase().trim();
+    
+    return logs.filter(log => {
+      if (levelFilter !== 'all' && log.level !== levelFilter) {
+        return false;
+      }
+      
+      if (searchTermLower && !log.message?.toLowerCase().includes(searchTermLower)) {
+        return false;
+      }
+      
+      return true;
+    });
+  }, [logs, searchTerm, levelFilter]);
+
+  // Get log level color
+  const getLogLevelColor = useCallback((level: string) => {
+    switch (level) {
+      case 'error': return '#dc3545';
+      case 'warn': return '#ffc107';
+      case 'debug': return '#6c757d';
+      case 'info':
+      default: return '#0d6efd';
+    }
+  }, []);
+
+  // Handle clear logs
+  const handleClearLogs = useCallback(() => {
+    cleanupLogs();
+    setLastUpdated(new Date());
+  }, [cleanupLogs]);
+
+  // Handle modal close
+  const handleClose = useCallback(() => {
+    onHide();
+    cleanupLogs();
+  }, [onHide, cleanupLogs]);
+
+  // Memoized log rendering
+  const renderedLogs = useMemo(() => {
+    return filteredLogs.map((log, index) => (
+      <div 
+        key={`${log.timestamp}-${index}`}
+        className={`log-entry log-${log.level || 'info'}`}
+        style={{
+          padding: '4px 8px',
+          borderLeft: `3px solid ${getLogLevelColor(log.level || 'info')}`,
+          marginBottom: '2px',
+          fontSize: '0.875rem',
+          fontFamily: 'monospace',
+          backgroundColor: index % 2 === 0 ? '#ffffff' : '#f8f9fa'
+        }}
+      >
+        <span style={{ color: '#6c757d', marginRight: '8px' }}>
+          {new Date(log.timestamp).toLocaleTimeString()}
+        </span>
+        <span style={{ 
+          color: getLogLevelColor(log.level || 'info'),
+          fontWeight: 'bold',
+          marginRight: '8px'
+        }}>
+          [{(log.level || 'info').toUpperCase()}]
+        </span>
+        <span>{log.message}</span>
+      </div>
+    ));
+  }, [filteredLogs, getLogLevelColor]);
+
+  // Handle modal visibility
+  useEffect(() => {
+    if (!show) {
+      cleanupLogs();
+    }
+  }, [show, cleanupLogs]);
 
   return (
-    <Modal 
-      show={show} 
-      onHide={onHide} 
-      size="xl" 
-      className="logs-modal"
-      fullscreen="lg-down"
-    >
-      <Modal.Header closeButton className="bg-dark text-light border-secondary">
-        <Modal.Title className="d-flex align-items-center">
-          <i className="bi bi-file-text me-2"></i>
-          Logs: {containerName.replace('erp-suite-', '')}
-          <Badge bg="secondary" className="ms-2">
-            {filteredLogs.length} entries
+    <Modal show={show} onHide={handleClose} size="lg" centered>
+      <Modal.Header closeButton>
+        <Modal.Title>
+          Logs: {containerName}
+          <Badge 
+            bg={isContainerConnected ? 'success' : 'danger'}
+            className="ms-2"
+          >
+            <CircleIcon size={10} className="me-1" />
+            {isContainerConnected ? 'Connected' : 'Disconnected'}
           </Badge>
         </Modal.Title>
       </Modal.Header>
-      
-      <Modal.Body className="bg-dark text-light p-0">
-        {/* Filters */}
-        <div className="p-3 border-bottom border-secondary">
-          <div className="row g-2">
-            <div className="col-md-6">
-              <InputGroup size="sm">
-                <InputGroup.Text className="bg-secondary text-light border-secondary">
-                  <i className="bi bi-search"></i>
-                </InputGroup.Text>
-                <Form.Control
-                  type="text"
-                  placeholder="Search logs..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="bg-dark text-light border-secondary"
-                />
-              </InputGroup>
-            </div>
-            <div className="col-md-3">
-              <Form.Select
-                size="sm"
-                value={levelFilter}
-                onChange={(e) => setLevelFilter(e.target.value)}
-                className="bg-dark text-light border-secondary"
-              >
-                <option value="all">All Levels</option>
-                <option value="error">Error</option>
-                <option value="warn">Warning</option>
-                <option value="info">Info</option>
-                <option value="debug">Debug</option>
-              </Form.Select>
-            </div>
-            <div className="col-md-3">
-              <div className="d-flex gap-2">
-                <Button
-                  variant="outline-primary"
-                  size="sm"
-                  onClick={loadLogs}
-                  disabled={loading}
-                >
-                  <i className="bi bi-arrow-clockwise me-1"></i>
-                  Refresh
-                </Button>
-                <Form.Check
-                  type="switch"
-                  id="auto-scroll"
-                  label="Auto-scroll"
-                  checked={autoScroll}
-                  onChange={(e) => setAutoScroll(e.target.checked)}
-                  className="text-light"
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Logs Container */}
+      <Modal.Body style={{ padding: '1rem', backgroundColor: '#f5f5f5' }}>
+        <Row className="mb-3">
+          <Col md={8}>
+            <InputGroup>
+              <InputGroup.Text><SearchIcon /></InputGroup.Text>
+              <Form.Control
+                type="text"
+                placeholder="Search logs..."
+                value={searchTerm}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => 
+                  setSearchTerm(e.target.value)
+                }
+                disabled={isConnecting || !isContainerConnected}
+              />
+            </InputGroup>
+          </Col>
+          <Col md={4}>
+            <Form.Select 
+              value={levelFilter}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => 
+                setLevelFilter(e.target.value)
+              }
+              disabled={isConnecting || !isContainerConnected}
+            >
+              <option value="all">All Levels</option>
+              <option value="info">Info</option>
+              <option value="warn">Warning</option>
+              <option value="error">Error</option>
+              <option value="debug">Debug</option>
+            </Form.Select>
+          </Col>
+        </Row>
+        
         <div 
           ref={logsContainerRef}
           className="logs-container"
+          onScroll={throttledScrollHandler}
           style={{ 
             height: '60vh', 
             overflowY: 'auto',
-            fontFamily: 'Monaco, Consolas, "Courier New", monospace',
-            fontSize: '0.85rem',
-            backgroundColor: 'white',
-            color: 'black'
+            border: '1px solid #dee2e6',
+            borderRadius: '0.25rem',
+            padding: '0.5rem',
+            backgroundColor: '#ffffff'
           }}
-          onScroll={handleScroll}
         >
-          {loading && logs.length === 0 ? (
-            <div className="text-center py-5">
-              <div className="spinner-border text-primary" role="status">
-                <span className="visually-hidden">Loading...</span>
-              </div>
-              <div className="mt-2">Loading logs...</div>
+          {isConnecting ? (
+            <div className="text-center my-4">
+              <SyncIcon className="fa-spin me-2" />
+              Loading logs...
             </div>
-          ) : filteredLogs.length > 0 ? (
-            <div className="p-3">
-              {/* Load More Button */}
-              {logs.length >= 100 && (
-                <div className="text-center mb-3">
-                  <Button
-                    variant="outline-secondary"
-                    size="sm"
-                    onClick={loadMoreLogs}
-                    disabled={loading}
-                  >
-                    {loading ? (
-                      <>
-                        <div className="spinner-border spinner-border-sm me-2" role="status">
-                          <span className="visually-hidden">Loading...</span>
-                        </div>
-                        Loading...
-                      </>
-                    ) : (
-                      <>
-                        <i className="bi bi-arrow-up me-1"></i>
-                        Load More Logs
-                      </>
-                    )}
-                  </Button>
-                </div>
+          ) : filteredLogs.length === 0 ? (
+            <div className="text-muted text-center my-4">
+              {logs.length === 0 ? (
+                isContainerConnected ? 
+                  'No logs available yet. Logs will appear here when generated.' :
+                  'Not connected to container. Check container status.'
+              ) : (
+                'No logs match current filters'
               )}
-
-              {/* Log Entries */}
-              {filteredLogs.map((log, index) => (
-                <div 
-                  key={index}
-                  className={`log-entry p-2 mb-1 rounded border-start border-2 ${
-                    log.level?.toLowerCase() === 'error' || log.level?.toLowerCase() === 'fatal' 
-                      ? 'bg-danger bg-opacity-10 border-danger' 
-                      : log.level?.toLowerCase() === 'warn' || log.level?.toLowerCase() === 'warning'
-                      ? 'bg-warning bg-opacity-10 border-warning'
-                      : 'bg-light bg-opacity-100 border-secondary'
-                  }`}
-                  style={{
-                    backgroundColor: 'white',
-                    color: 'black',
-                    wordBreak: 'break-word',
-                    whiteSpace: 'pre-wrap'
-                  }}
-                >
-                  <div className="d-flex justify-content-between align-items-start mb-1">
-                    <Badge bg={getLogLevelColor(log.level || 'info')} className="me-2">
-                      {log.level || 'INFO'}
-                    </Badge>
-                    <small className="text-dark">
-                      {formatTime(log.timestamp)}
-                    </small>
-                  </div>
-                  <div className="log-message">
-                    {log.message || log.raw}
-                  </div>
-                  {log.service && (
-                    <small className="text-dark">
-                      Service: {log.service}
-                    </small>
-                  )}
-                </div>
-              ))}
-              <div ref={logsEndRef} />
             </div>
           ) : (
-            <div className="text-center text-muted py-5">
-              <i className="bi bi-journal-x fs-1"></i>
-              <div className="mt-2">
-                {searchTerm || levelFilter !== 'all' 
-                  ? 'No logs match your filters' 
-                  : 'No logs available'
-                }
-              </div>
-            </div>
+            <>
+              {renderedLogs}
+              <div ref={logsEndRef} />
+            </>
           )}
         </div>
       </Modal.Body>
-      
-      <Modal.Footer className="bg-dark border-secondary">
-        <div className="d-flex justify-content-between w-100 align-items-center">
+      <Modal.Footer className="d-flex justify-content-between">
+        <div className="d-flex align-items-center">
+          <Form.Check
+            type="switch"
+            id="auto-scroll-switch"
+            label="Auto-scroll"
+            checked={autoScroll}
+            onChange={(e) => setAutoScroll(e.target.checked)}
+            className="me-3"
+          />
+          <Button
+            variant="outline-secondary"
+            size="sm"
+            onClick={handleClearLogs}
+            className="me-3"
+            disabled={logs.length === 0}
+          >
+            Clear Logs
+          </Button>
           <small className="text-muted">
-            Showing {filteredLogs.length} of {logs.length} log entries
+            {filteredLogs.length !== logs.length ? 
+              `Showing ${filteredLogs.length} of ${logs.length} logs` :
+              `${logs.length} log${logs.length !== 1 ? 's' : ''}`
+            }
           </small>
-          <Button variant="secondary" onClick={onHide}>
+        </div>
+        <div className="d-flex align-items-center gap-2">
+          <small className="text-muted">
+            Last updated: {lastUpdated.toLocaleTimeString()}
+          </small>
+          <Button variant="secondary" onClick={handleClose}>
             Close
           </Button>
         </div>

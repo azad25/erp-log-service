@@ -5,7 +5,16 @@ export interface LogEntry {
   message: string;
   raw: string;
   service?: string;
+  type?: 'log' | 'container_change' | 'close';
+  containerId?: string;
   [key: string]: any;
+}
+
+export interface ContainerPort {
+  container_port: string;
+  host_ip?: string;
+  host_port?: string;
+  protocol?: string;
 }
 
 export interface ContainerInfo {
@@ -16,7 +25,7 @@ export interface ContainerInfo {
   labels: Record<string, string>;
   isInfra?: boolean;
   created?: string;
-  ports?: string[];
+  ports?: Array<string | ContainerPort>;
 }
 
 export type LogFilter = {

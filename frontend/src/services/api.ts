@@ -28,7 +28,7 @@ export const getContainers = async (): Promise<ContainerInfo[]> => {
 export const getLogs = async (containerId: string, limit: number = 100): Promise<LogEntry[]> => {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/logs/logs/${containerId}?limit=${limit}`
+      `${API_BASE_URL}/logs/${containerId}?limit=${limit}`
     );
     
     if (!response.ok) {

@@ -1,268 +1,356 @@
-import React, { createContext, useContext, useEffect, useRef, useCallback, ReactNode, useState } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useCallback,
+  ReactNode,
+  useState,
+  useMemo,
+} from 'react';
 import { LogEntry } from '../types/logs';
 
+// Constants
+const PING_INTERVAL = 30000; // 30 seconds
+const PONG_TIMEOUT = 5000;   // 5 seconds
+const MAX_RECONNECT_ATTEMPTS = 5;
+const BASE_RECONNECT_DELAY = 1000; // 1 second
+
 interface WebSocketContextType {
-  sendMessage: (message: any) => void;
-  isConnected: boolean;
+  sendMessage: (message: any, containerId?: string) => void;
+  isConnected: (containerId: string) => boolean;
+  connect: (containerId: string) => void;
+  disconnect: (containerId: string) => void;
+  connectionStatus: Record<string, boolean>;
 }
 
 const WebSocketContext = createContext<WebSocketContextType | null>(null);
 
 interface WebSocketProviderProps {
   children: ReactNode;
-  onMessage: (data: LogEntry) => void;
+  onMessage: (data: LogEntry, containerId: string) => void;
 }
 
-export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children, onMessage }) => {
-  const ws = useRef<WebSocket | null>(null);
-  const [isConnected, setIsConnected] = useState<boolean>(false);
-  const reconnectAttempts = useRef(0);
-  const maxReconnectAttempts = 5;
-  const reconnectTimeout = useRef<NodeJS.Timeout | null>(null);
-  const pingInterval = useRef<NodeJS.Timeout | null>(null);
-  const pongTimeout = useRef<NodeJS.Timeout | null>(null);
-  const isClosing = useRef(false);
+export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
+  children,
+  onMessage,
+}) => {
+  // State
+  const [connectionStatus, setConnectionStatus] = useState<Record<string, boolean>>({});
+  
+  // Refs for WebSocket connections and timeouts
+  const connections = useRef<Record<string, WebSocket>>({});
+  const reconnectAttempts = useRef<Record<string, number>>({});
+  const pingIntervals = useRef<Record<string, NodeJS.Timeout>>({});
+  const pongTimeouts = useRef<Record<string, NodeJS.Timeout>>({});
+  const reconnectTimeouts = useRef<Record<string, NodeJS.Timeout>>({});
+  const isClosing = useRef<Record<string, boolean>>({});
+  
+  // Refs to store functions to avoid circular dependencies
+  const connectRef = useRef<((containerId: string) => void) | null>(null);
+  const scheduleReconnectRef = useRef<((containerId: string) => void) | null>(null);
+  
+  // Optimized console logging
+  const safeConsole = useMemo(() => ({
+    log: process.env.NODE_ENV === 'development' ? console.log : () => {},
+    error: process.env.NODE_ENV === 'development' ? console.error : () => {},
+    warn: process.env.NODE_ENV === 'development' ? console.warn : () => {}
+  }), []);
 
-  const PING_INTERVAL = 30000; // 30 seconds
-  const PONG_TIMEOUT = 5000;   // 5 seconds
-  const RECONNECT_DELAY = 1000; // Base delay for reconnection
-
-  const connect = useCallback(() => {
-    // Clear any existing connection
-    if (ws.current) {
-      ws.current.onopen = null;
-      ws.current.onclose = null;
-      ws.current.onerror = null;
-      ws.current.onmessage = null;
-      
-      try {
-        if (ws.current.readyState === WebSocket.OPEN) {
-          ws.current.close(1000, 'Reconnecting...');
-        } else {
-          ws.current.close();
-        }
-      } catch (error) {
-        console.error('Error closing WebSocket:', error);
-      }
-      ws.current = null;
-    }
-
-    // In development, connect directly to the backend server
-    // In production, use the same host as the frontend but with ws(s) protocol
-    const isDev = process.env.NODE_ENV === 'development';
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    
-    // Get container ID from URL or use 'all' to get logs from all containers
-    const pathParts = window.location.pathname.split('/');
-    const containerId = pathParts[pathParts.length - 1] || 'all';
-    
-    // Construct WebSocket URL
-    let wsUrl: string;
-    
-    if (process.env.REACT_APP_WS_URL) {
-      wsUrl = `${process.env.REACT_APP_WS_URL}/ws/logs/${containerId}`;
-    } else if (isDev) {
-      // In development, connect directly to the backend server
-      const host = window.location.hostname;
-      const port = '8093';
-      wsUrl = `${wsProtocol}//${host}:${port}/ws/logs/${containerId}`;
-    } else {
-      // In production, use the same host as the frontend
-      const host = window.location.host;
-      wsUrl = `${wsProtocol}//${host}/ws/logs/${containerId}`;
+  // Clean up connection resources
+  const cleanupConnection = useCallback((containerId: string) => {
+    // Clear all timeouts and intervals
+    if (pingIntervals.current[containerId]) {
+      clearInterval(pingIntervals.current[containerId]);
+      delete pingIntervals.current[containerId];
     }
     
-    // Clean up any potential double slashes
-    const cleanWsUrl = wsUrl.replace(/([^:]\/)\/+/g, '$1');
-    
-    console.log('Connecting to WebSocket:', cleanWsUrl);
-    ws.current = new WebSocket(cleanWsUrl);
-    
-    // Configure WebSocket with binary type for better performance
-    ws.current.binaryType = 'arraybuffer';
-    
-    const setupPing = () => {
-      if (pingInterval.current) clearInterval(pingInterval.current);
-      
-      pingInterval.current = setInterval(() => {
-        if (ws.current?.readyState === WebSocket.OPEN) {
-          try {
-            ws.current.send('ping');
-            
-            // Set a timeout for pong
-            if (pongTimeout.current) clearTimeout(pongTimeout.current);
-            pongTimeout.current = setTimeout(() => {
-              console.warn('Pong timeout, reconnecting...');
-              if (ws.current) {
-                ws.current.close(4000, 'Pong timeout');
-              }
-            }, PONG_TIMEOUT);
-            
-          } catch (error) {
-            console.error('Error sending ping:', error);
-          }
-        }
-      }, PING_INTERVAL);
-    };
-
-    ws.current.onopen = (event) => {
-      console.log('WebSocket connected successfully');
-      console.debug('WebSocket connection details:', {
-        url: ws.current?.url,
-        protocol: ws.current?.protocol,
-        readyState: ws.current?.readyState
-      });
-      
-      setIsConnected(true);
-      reconnectAttempts.current = 0;
-      isClosing.current = false;
-      
-      // Start ping/pong after short delay
-      setTimeout(() => setupPing(), 1000);
-      
-      // Request initial log batch if needed
-      if (ws.current?.readyState === WebSocket.OPEN) {
-        ws.current.send(JSON.stringify({
-          type: 'init',
-          timestamp: Date.now()
-        }));
-      }
-    };
-
-    ws.current.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      console.error('WebSocket readyState:', ws.current?.readyState);
-      setIsConnected(false);
-    };
-
-    ws.current.onclose = (event) => {
-      console.log(`WebSocket closed: ${event.code} ${event.reason || 'No reason provided'}`);
-      console.debug('Close event details:', {
-        wasClean: event.wasClean,
-        code: event.code,
-        reason: event.reason
-      });
-      
-      setIsConnected(false);
-      
-      // Clear intervals and timeouts
-      if (pingInterval.current) clearInterval(pingInterval.current);
-      if (pongTimeout.current) clearTimeout(pongTimeout.current);
-      
-      // Don't reconnect on normal closure or if closing intentionally
-      if (event.code === 1000 || isClosing.current) {
-        console.log('WebSocket connection closed normally');
-        return;
-      }
-      
-      // Don't attempt to reconnect if we've exceeded max attempts
-      if (reconnectAttempts.current >= maxReconnectAttempts) {
-        console.error('Max reconnection attempts reached');
-        return;
-      }
-      
-      // Calculate backoff delay with jitter
-      const baseDelay = Math.min(
-        RECONNECT_DELAY * Math.pow(2, reconnectAttempts.current),
-        30000 // Max 30 seconds
-      );
-      const jitter = Math.random() * 1000; // Add up to 1s jitter
-      const delay = Math.floor(baseDelay + jitter);
-      
-      reconnectAttempts.current++;
-      
-      console.log(`Attempting to reconnect in ${delay}ms (attempt ${reconnectAttempts.current}/${maxReconnectAttempts})`);
-      
-      // Attempt to reconnect with backoff
-      reconnectTimeout.current = setTimeout(() => {
-        if (!isClosing.current) {
-          connect();
-        }
-      }, delay);
-    };
-
-    ws.current.onmessage = (event) => {
-      try {
-        // Handle binary messages (if any)
-        if (typeof event.data !== 'string') {
-          console.warn('Received binary WebSocket message, expected text');
-          return;
-        }
-        
-        // Handle control messages
-        if (event.data === 'pong') {
-          if (pongTimeout.current) {
-            clearTimeout(pongTimeout.current);
-            pongTimeout.current = null;
-          }
-          return;
-        }
-        
-        if (event.data === 'ping') {
-          if (ws.current?.readyState === WebSocket.OPEN) {
-            ws.current.send('pong');
-          }
-          return;
-        }
-        
-        // Handle data messages
-        try {
-          const data = JSON.parse(event.data);
-          
-          // Process batched messages if needed
-          if (Array.isArray(data)) {
-            data.forEach((item) => onMessage(item));
-          } else {
-            onMessage(data);
-          }
-          
-          // Reset reconnect attempts on successful message
-          if (reconnectAttempts.current > 0) {
-            reconnectAttempts.current = 0;
-          }
-        } catch (parseError) {
-          console.error('Error parsing WebSocket message:', parseError, event.data);
-        }
-      } catch (error) {
-        console.error('Error in WebSocket message handler:', error);
-      }
-    };
-  }, [onMessage]);
-
-  // Initialize WebSocket connection on mount and clean up on unmount
-  useEffect(() => {
-    connect();
-
-    return () => {
-      isClosing.current = true;
-      
-      // Clear all timeouts and intervals
-      if (reconnectTimeout.current) clearTimeout(reconnectTimeout.current);
-      if (pingInterval.current) clearInterval(pingInterval.current);
-      if (pongTimeout.current) clearTimeout(pongTimeout.current);
-      
-      // Close WebSocket connection
-      if (ws.current) {
-        ws.current.close(1000, 'Component unmounting');
-      }
-    };
-  }, [connect]);
-
-  const sendMessage = useCallback((message: any) => {
-    if (ws.current?.readyState === WebSocket.OPEN) {
-      try {
-        const messageStr = typeof message === 'string' ? message : JSON.stringify(message);
-        ws.current.send(messageStr);
-      } catch (error) {
-        console.error('Error sending WebSocket message:', error);
-      }
-    } else {
-      console.warn('Cannot send message - WebSocket is not connected');
+    if (pongTimeouts.current[containerId]) {
+      clearTimeout(pongTimeouts.current[containerId]);
+      delete pongTimeouts.current[containerId];
     }
+    
+    if (reconnectTimeouts.current[containerId]) {
+      clearTimeout(reconnectTimeouts.current[containerId]);
+      delete reconnectTimeouts.current[containerId];
+    }
+    
+    // Close WebSocket if open
+    const ws = connections.current[containerId];
+    if (ws) {
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close(1000, 'Connection cleanup');
+      }
+      delete connections.current[containerId];
+    }
+    
+    // Clean up refs
+    delete reconnectAttempts.current[containerId];
+    delete isClosing.current[containerId];
+    
+    // Update connection status
+    setConnectionStatus(prev => {
+      const newStatus = { ...prev };
+      delete newStatus[containerId];
+      return newStatus;
+    });
   }, []);
 
+  // Setup ping/pong mechanism
+  const setupPing = useCallback((containerId: string, ws: WebSocket) => {
+    // Clear existing ping interval
+    if (pingIntervals.current[containerId]) {
+      clearInterval(pingIntervals.current[containerId]);
+    }
+    
+    pingIntervals.current[containerId] = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'ping' }));
+        
+        // Clear existing pong timeout
+        if (pongTimeouts.current[containerId]) {
+          clearTimeout(pongTimeouts.current[containerId]);
+        }
+        
+        // Set pong timeout
+        pongTimeouts.current[containerId] = setTimeout(() => {
+          safeConsole.warn(`No pong received for container ${containerId}, closing connection`);
+          ws.close(1000, 'Ping timeout');
+        }, PONG_TIMEOUT);
+      }
+    }, PING_INTERVAL);
+  }, [safeConsole]);
+
+  // Reconnection logic
+  const scheduleReconnect = useCallback((containerId: string) => {
+    if (isClosing.current[containerId]) return;
+    
+    const attempts = reconnectAttempts.current[containerId] || 0;
+    if (attempts >= MAX_RECONNECT_ATTEMPTS) {
+      safeConsole.warn(`Max reconnection attempts reached for container ${containerId}`);
+      cleanupConnection(containerId);
+      return;
+    }
+    
+    const delay = Math.min(BASE_RECONNECT_DELAY * Math.pow(2, attempts), 30000);
+    safeConsole.log(`Scheduling reconnection for ${containerId} in ${delay}ms (attempt ${attempts + 1})`);
+    
+    reconnectAttempts.current[containerId] = attempts + 1;
+    
+    reconnectTimeouts.current[containerId] = setTimeout(() => {
+      if (!isClosing.current[containerId] && connectRef.current) {
+        connectRef.current(containerId);
+      }
+    }, delay);
+  }, [safeConsole, cleanupConnection]);
+
+  // Connect to WebSocket with better error handling
+  const connect = useCallback((containerId: string) => {
+    // Prevent multiple connections or connecting to closing containers
+    if (connections.current[containerId] || isClosing.current[containerId]) {
+      return;
+    }
+
+    // Clear any existing reconnection timeout
+    if (reconnectTimeouts.current[containerId]) {
+      clearTimeout(reconnectTimeouts.current[containerId]);
+      delete reconnectTimeouts.current[containerId];
+    }
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/api/v1/logs/ws/logs/${containerId}`;
+    
+    try {
+      const ws = new WebSocket(wsUrl);
+      connections.current[containerId] = ws;
+      
+      // Set connecting status immediately
+      setConnectionStatus(prev => ({ ...prev, [containerId]: false }));
+
+      ws.onopen = () => {
+        safeConsole.log(`WebSocket connected for container ${containerId}`);
+        // Use functional update to prevent stale closures
+        setConnectionStatus(prev => ({ ...prev, [containerId]: true }));
+        reconnectAttempts.current[containerId] = 0;
+        setupPing(containerId, ws);
+
+        // Dispatch connection status event
+        window.dispatchEvent(new CustomEvent('websocket_status', {
+          detail: { containerId, connected: true }
+        }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          safeConsole.log(`Received WebSocket message for ${containerId}:`, data);
+          
+          if (data.type === 'pong' || data.type === 'connection_established') {
+            // Clear pong timeout
+            if (pongTimeouts.current[containerId]) {
+              clearTimeout(pongTimeouts.current[containerId]);
+              delete pongTimeouts.current[containerId];
+            }
+            return;
+          }
+          
+          if (data.type === 'log') {
+            // Ensure the payload is properly structured
+            const logEntry = {
+              ...data.payload,
+              timestamp: data.payload.timestamp || new Date().toISOString(),
+              level: data.payload.level || 'info',
+              message: data.payload.message || data.payload.raw || ''
+            };
+
+            // Dispatch event for real-time log updates
+            const logEvent = new CustomEvent('logMessage', {
+              detail: {
+                log: logEntry,
+                containerId
+              }
+            });
+            window.dispatchEvent(logEvent);
+            
+            // Also call the onMessage callback
+            onMessage(logEntry, containerId);
+          }
+        } catch (error) {
+          safeConsole.error('Error parsing WebSocket message:', error);
+        }
+      };
+
+      ws.onclose = (event) => {
+        safeConsole.log(`WebSocket closed for container ${containerId}: ${event.code} ${event.reason}`);
+        
+        // Clean up ping/pong timers
+        if (pingIntervals.current[containerId]) {
+          clearInterval(pingIntervals.current[containerId]);
+          delete pingIntervals.current[containerId];
+        }
+        if (pongTimeouts.current[containerId]) {
+          clearTimeout(pongTimeouts.current[containerId]);
+          delete pongTimeouts.current[containerId];
+        }
+        
+        // Remove from connections
+        delete connections.current[containerId];
+        
+        // Use functional update to prevent stale closures
+        setConnectionStatus(prev => ({ ...prev, [containerId]: false }));
+
+        // Dispatch disconnection event
+        window.dispatchEvent(new CustomEvent('websocket_status', {
+          detail: { containerId, connected: false }
+        }));
+        
+        // Only schedule reconnection for abnormal closures and if not intentionally closing
+        if (!isClosing.current[containerId] && event.code !== 1000 && event.code !== 1001) {
+          scheduleReconnectRef.current?.(containerId);
+        } else if (isClosing.current[containerId]) {
+          // Clean up completely if intentionally closing
+          delete isClosing.current[containerId];
+          delete reconnectAttempts.current[containerId];
+        }
+      };
+
+      ws.onerror = (error) => {
+        safeConsole.error(`WebSocket error for container ${containerId}:`, error);
+        // Don't schedule reconnect on error - let onclose handle it
+      };
+
+    } catch (error) {
+      safeConsole.error(`Failed to create WebSocket for container ${containerId}:`, error);
+      delete connections.current[containerId];
+      setConnectionStatus(prev => ({ ...prev, [containerId]: false }));
+      scheduleReconnectRef.current?.(containerId);
+    }
+  }, [onMessage, safeConsole, setupPing]);
+
+  // Store functions in refs to avoid circular dependencies
+  useEffect(() => {
+    connectRef.current = connect;
+    scheduleReconnectRef.current = scheduleReconnect;
+  }, [connect, scheduleReconnect]);
+
+  // Disconnect from WebSocket
+  const disconnect = useCallback((containerId: string) => {
+    isClosing.current[containerId] = true;
+    cleanupConnection(containerId);
+  }, [cleanupConnection]);
+
+  // Send message through WebSocket
+  const sendMessage = useCallback((message: any, containerId?: string) => {
+    if (containerId) {
+      const ws = connections.current[containerId];
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify(message));
+        } catch (error) {
+          safeConsole.error(`Error sending message to ${containerId}:`, error);
+        }
+      }
+    } else {
+      // Send to all open connections
+      Object.entries(connections.current).forEach(([id, ws]) => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify(message));
+          } catch (error) {
+            safeConsole.error(`Error sending broadcast message to ${id}:`, error);
+          }
+        }
+      });
+    }
+  }, [safeConsole]);
+
+  // Check if connected
+  const isConnected = useCallback((containerId: string) => {
+    const ws = connections.current[containerId];
+    return ws ? ws.readyState === WebSocket.OPEN : false;
+  }, []);
+
+  // Cleanup all connections on unmount
+  useEffect(() => {
+    return () => {
+      // Mark all as closing
+      Object.keys(connections.current).forEach(containerId => {
+        isClosing.current[containerId] = true;
+      });
+      
+      // Clear all timers
+      Object.values(pingIntervals.current).forEach(clearInterval);
+      Object.values(pongTimeouts.current).forEach(clearTimeout);
+      Object.values(reconnectTimeouts.current).forEach(clearTimeout);
+      
+      // Close all connections
+      Object.entries(connections.current).forEach(([containerId, ws]) => {
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+          ws.close(1000, 'Component unmounting');
+        }
+      });
+      
+      // Clear all refs
+      connections.current = {};
+      pingIntervals.current = {};
+      pongTimeouts.current = {};
+      reconnectTimeouts.current = {};
+      reconnectAttempts.current = {};
+      isClosing.current = {};
+    };
+  }, []);
+
+  // Memoized context value to prevent unnecessary re-renders
+  const contextValue = useMemo(() => ({
+    sendMessage,
+    isConnected,
+    connect,
+    disconnect,
+    connectionStatus,
+  }), [sendMessage, isConnected, connect, disconnect, connectionStatus]);
+
   return (
-    <WebSocketContext.Provider value={{ sendMessage, isConnected }}>
+    <WebSocketContext.Provider value={contextValue}>
       {children}
     </WebSocketContext.Provider>
   );

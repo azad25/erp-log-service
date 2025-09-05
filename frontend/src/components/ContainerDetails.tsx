@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Modal, Button, Card, Row, Col, Badge, ProgressBar } from 'react-bootstrap';
-import { ContainerInfo, LogEntry } from '../types/logs';
+import { ContainerInfo, LogEntry, ContainerPort } from '../types/logs';
 import { startContainer, stopContainer, restartContainer } from '../services/containerService';
 import { getLogs } from '../services/api';
 import LogsModal from './LogsModal';
+import { useContainerStats } from '../contexts/ContainerStatsContext';
 
 interface ContainerDetailsProps {
   container: ContainerInfo | null;
@@ -12,14 +13,7 @@ interface ContainerDetailsProps {
   onContainerAction: (action: string, containerId: string) => void;
 }
 
-interface ContainerStats {
-  memoryUsage: number;
-  memoryLimit: number;
-  cpuUsage: number;
-  diskUsage: number;
-  networkRx: number;
-  networkTx: number;
-}
+// Reusing ContainerStats interface from ContainerStatsContext
 
 const ContainerDetails: React.FC<ContainerDetailsProps> = ({
   container,
@@ -30,13 +24,26 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [showLogsModal, setShowLogsModal] = useState(false);
-  const [stats, setStats] = useState<ContainerStats>({
+  const { stats: containerStats, startWatching, stopWatching } = useContainerStats();
+  // Local state for display purposes
+  interface DisplayStats {
+    memoryUsage: number;
+    memoryLimit: number;
+    cpuUsage: number;
+    diskUsage: number;
+    networkRx: number;
+    networkTx: number;
+    pids: number;
+  }
+
+  const [stats, setStats] = useState<DisplayStats>({
     memoryUsage: 0,
-    memoryLimit: 0,
+    memoryLimit: 1, // Initialize with 1 to avoid division by zero
     cpuUsage: 0,
     diskUsage: 0,
     networkRx: 0,
-    networkTx: 0
+    networkTx: 0,
+    pids: 0
   });
 
   const loadContainerLogs = useCallback(async () => {
@@ -56,21 +63,29 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
   useEffect(() => {
     if (container && show) {
       loadContainerLogs();
-      loadContainerStats();
+      startWatching(container.id);
+      
+      return () => {
+        stopWatching(container.id);
+      };
     }
-  }, [container, show, loadContainerLogs]);
+  }, [container, show, loadContainerLogs, startWatching, stopWatching]);
 
-  const loadContainerStats = () => {
-    // Mock stats for now - in real implementation, this would fetch from Docker API
-    setStats({
-      memoryUsage: Math.random() * 512,
-      memoryLimit: 512,
-      cpuUsage: Math.random() * 100,
-      diskUsage: Math.random() * 100,
-      networkRx: Math.random() * 1024,
-      networkTx: Math.random() * 1024
-    });
-  };
+  // Update local stats when containerStats changes
+  useEffect(() => {
+    if (container && container.id && containerStats[container.id]) {
+      const stats = containerStats[container.id];
+      setStats({
+        memoryUsage: Number(stats.memoryUsage) || 0,
+        memoryLimit: Number(stats.memoryLimit) || 1,
+        cpuUsage: Number(stats.cpuUsage) || 0,
+        diskUsage: (Number(stats.blockRead) || 0) + (Number(stats.blockWrite) || 0),
+        networkRx: Number(stats.networkRx) || 0,
+        networkTx: Number(stats.networkTx) || 0,
+        pids: Number(stats.pids) || 0
+      });
+    }
+  }, [container, containerStats]);
 
   const handleContainerAction = async (action: string) => {
     if (!container) return;
@@ -94,8 +109,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
       
       onContainerAction(action, container.id);
       
-      // Reload stats after action
-      setTimeout(loadContainerStats, 1000);
+      // Stats will update automatically via WebSocket
       
     } catch (error) {
       console.error(`Error ${action}ing container:`, error);
@@ -234,11 +248,18 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
                     <strong>Ports:</strong> 
                     {container.ports && container.ports.length > 0 ? (
                       <div className="mt-1">
-                        {container.ports.map((port, index) => (
-                          <Badge key={index} bg="primary" className="me-1">
-                            {port}
-                          </Badge>
-                        ))}
+                        {container.ports.map((port: string | ContainerPort, index: number) => {
+                          // Handle both string and object port formats
+                          const portStr = typeof port === 'string' 
+                            ? port 
+                            : `${port.host_ip || '0.0.0.0'}:${port.host_port || '?'}->${port.container_port || '?'}${port.protocol ? `/${port.protocol}` : ''}`;
+                          
+                          return (
+                            <Badge key={index} bg="primary" className="me-1 mb-1">
+                              {portStr}
+                            </Badge>
+                          );
+                        })}
                       </div>
                     ) : (
                       <span className="text-secondary"> None exposed</span>
