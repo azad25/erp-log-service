@@ -15,7 +15,6 @@ const App: React.FC = () => {
   const [selectedContainer, setSelectedContainer] = useState<string>('all');
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isLoadingContainers, setIsLoadingContainers] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<LogFilter>({ level: 'all', search: '', container: 'all' });
   const [isConnected, setIsConnected] = useState<boolean>(false);
@@ -25,8 +24,11 @@ const App: React.FC = () => {
   const maxReconnectAttempts = 5;
 
   const connectWebSocket = useCallback((containerId: string) => {
+    // Clean up any existing connection
     if (wsRef.current) {
-      wsRef.current.close();
+      wsRef.current.close(1000, 'Switching containers');
+      wsRef.current = null;
+      setIsConnected(false);
     }
 
     if (containerId === 'all') {
@@ -35,84 +37,132 @@ const App: React.FC = () => {
       return;
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Use environment variable or fallback to port 8093
-    const wsHost = process.env.REACT_APP_WS_URL || 'localhost:8093';
-    const wsUrl = `${protocol}//${wsHost}/api/v1/logs/ws/logs/${containerId}`;
+    // Use WebSocket URL from environment variables
+    const wsBaseUrl = process.env.REACT_APP_WS_URL || 'ws://localhost:8093';
+    // Construct the full WebSocket URL with the correct path
+    const wsUrl = `${wsBaseUrl}/api/v1/logs/ws/logs/${containerId}`;
     
     console.log('Connecting WebSocket to:', wsUrl);
-    wsRef.current = new WebSocket(wsUrl);
     
-    // Add connection timeout
-    setTimeout(() => {
-      if (wsRef.current && wsRef.current.readyState !== WebSocket.OPEN) {
-        console.log('WebSocket connection timeout');
-        wsRef.current.close();
-      }
-    }, 5000);
-
-    wsRef.current.onopen = () => {
-      console.log(`WebSocket connected for container: ${containerId}`);
-      setIsConnected(true);
-      setReconnectAttempts(0);
-    };
-
-    wsRef.current.onmessage = (event: MessageEvent) => {
-      try {
-        const logEntry = JSON.parse(event.data);
-        setLogs(prevLogs => {
-          const newLogs = [...prevLogs, logEntry];
-          // Keep only the last 1000 logs to prevent memory issues
-          return newLogs.slice(-1000);
-        });
-      } catch (error) {
-        console.error('Error parsing WebSocket message:', error);
-      }
-    };
-
-    wsRef.current.onclose = () => {
-      console.log(`WebSocket disconnected for container: ${containerId}`);
-      setIsConnected(false);
+    try {
+      wsRef.current = new WebSocket(wsUrl);
       
-      // Attempt to reconnect with exponential backoff
-      if (reconnectAttempts < maxReconnectAttempts) {
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
-        setReconnectAttempts(prev => prev + 1);
-        
-        setTimeout(() => {
-          console.log(`Attempting to reconnect (${reconnectAttempts + 1}/${maxReconnectAttempts})`);
-          connectWebSocket(containerId);
-        }, delay);
-      }
-    };
+      // Add connection timeout
+      const connectionTimeout = setTimeout(() => {
+        if (wsRef.current && wsRef.current.readyState !== WebSocket.OPEN) {
+          console.log('WebSocket connection timeout');
+          wsRef.current.close();
+          throw new Error('Connection timeout');
+        }
+      }, 5000);
 
-    wsRef.current.onerror = (error: Event) => {
-      console.error(`WebSocket error for container ${containerId}:`, error);
-    };
+      wsRef.current.onopen = () => {
+        clearTimeout(connectionTimeout);
+        console.log(`WebSocket connected for container: ${containerId}`);
+        setIsConnected(true);
+        setReconnectAttempts(0);
+        
+        // Send initial heartbeat
+        wsRef.current?.send(JSON.stringify({ type: 'heartbeat' }));
+      };
+
+      wsRef.current.onmessage = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          
+          // Handle connection established message
+          if (data.type === 'connection_established') {
+            console.log('WebSocket connection established:', data.message);
+            return;
+          }
+          
+          // Handle heartbeat acknowledgment
+          if (data.type === 'heartbeat_ack') {
+            console.debug('Received heartbeat ack');
+            return;
+          }
+          
+          // Handle log entries
+          setLogs(prevLogs => {
+            const newLogs = [...prevLogs, data];
+            // Keep only the last 1000 logs to prevent memory issues
+            return newLogs.slice(-1000);
+          });
+        } catch (error) {
+          console.error('Error processing WebSocket message:', error);
+        }
+      };
+
+      wsRef.current.onclose = (event: CloseEvent) => {
+        clearTimeout(connectionTimeout);
+        console.log(`WebSocket disconnected for container: ${containerId}`, event);
+        setIsConnected(false);
+        
+        // Don't try to reconnect if this was a normal closure
+        if (event.code === 1000) {
+          console.log('WebSocket closed normally');
+          return;
+        }
+        
+        // Attempt to reconnect with exponential backoff
+        if (reconnectAttempts < maxReconnectAttempts) {
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+          setReconnectAttempts(prev => prev + 1);
+          
+          console.log(`Attempting to reconnect (${reconnectAttempts + 1}/${maxReconnectAttempts}) in ${delay}ms`);
+          
+          setTimeout(() => {
+            if (wsRef.current?.readyState !== WebSocket.OPEN) {
+              connectWebSocket(containerId);
+            }
+          }, delay);
+        } else {
+          console.error('Max reconnection attempts reached');
+        }
+      };
+
+      wsRef.current.onerror = (error: Event) => {
+        console.error('WebSocket error:', error);
+      };
+      
+    } catch (error) {
+      console.error('Error creating WebSocket:', error);
+      setIsConnected(false);
+    }
   }, [reconnectAttempts, maxReconnectAttempts]);
 
   // WebSocket connection effect
   useEffect(() => {
-    connectWebSocket(selectedContainer);
+    if (selectedContainer) {
+      console.log('Selected container changed:', selectedContainer);
+      connectWebSocket(selectedContainer);
+    }
     
     return () => {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.close(1000, 'Component unmounting');
+      console.log('Cleaning up WebSocket connection');
+      if (wsRef.current) {
+        wsRef.current.onclose = null; // Prevent reconnection on unmount
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.close(1000, 'Component unmounting');
+        }
+        wsRef.current = null;
+        setIsConnected(false);
       }
     };
   }, [selectedContainer, connectWebSocket]);
 
   const loadContainers = useCallback(async () => {
     try {
-      setIsLoadingContainers(true);
+      setIsLoading(true);
       const data = await getContainers();
-      setContainers(data || []);
+      setContainers(data);
       setError(null);
     } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to load containers';
+      setError(errorMessage);
       console.error('Error loading containers:', err);
-      setError('Failed to load containers. Please try again.');
     } finally {
-      setIsLoadingContainers(false);
+      setIsLoading(false);
     }
   }, []);
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Modal, Button, Card, Row, Col, Badge, ProgressBar } from 'react-bootstrap';
 import { ContainerInfo, LogEntry } from '../types/logs';
 import { startContainer, stopContainer, restartContainer } from '../services/containerService';
@@ -39,14 +39,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
     networkTx: 0
   });
 
-  useEffect(() => {
-    if (container && show) {
-      loadContainerLogs();
-      loadContainerStats();
-    }
-  }, [container, show]);
-
-  const loadContainerLogs = async () => {
+  const loadContainerLogs = useCallback(async () => {
     if (!container) return;
     
     try {
@@ -58,7 +51,14 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [container]);
+
+  useEffect(() => {
+    if (container && show) {
+      loadContainerLogs();
+      loadContainerStats();
+    }
+  }, [container, show, loadContainerLogs]);
 
   const loadContainerStats = () => {
     // Mock stats for now - in real implementation, this would fetch from Docker API
@@ -77,17 +77,16 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
     
     try {
       setLoading(true);
-      let result;
       
       switch (action) {
         case 'start':
-          result = await startContainer(container.id);
+          await startContainer(container.id);
           break;
         case 'stop':
-          result = await stopContainer(container.id);
+          await stopContainer(container.id);
           break;
         case 'restart':
-          result = await restartContainer(container.id);
+          await restartContainer(container.id);
           break;
         default:
           return;
@@ -229,7 +228,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
                     <strong>Image:</strong> <code className="text-warning">{container.image}</code>
                   </div>
                   <div className="mb-2">
-                    <strong>Created:</strong> {formatTime(container.created)}
+                    <strong>Created:</strong> {container.created ? formatTime(container.created) : 'N/A'}
                   </div>
                   <div className="mb-2">
                     <strong>Ports:</strong> 

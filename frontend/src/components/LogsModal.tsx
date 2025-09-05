@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Modal, Button, Form, Badge, InputGroup } from 'react-bootstrap';
 import { LogEntry } from '../types/logs';
 import { getLogs } from '../services/api';
@@ -24,19 +24,7 @@ const LogsModal: React.FC<LogsModalProps> = ({
   const logsEndRef = useRef<HTMLDivElement>(null);
   const logsContainerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (show && containerId) {
-      loadLogs();
-    }
-  }, [show, containerId]);
-
-  useEffect(() => {
-    if (autoScroll && logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [logs, autoScroll]);
-
-  const loadLogs = async () => {
+  const loadLogs = useCallback(async () => {
     try {
       setLoading(true);
       const containerLogs = await getLogs(containerId, 500);
@@ -46,7 +34,20 @@ const LogsModal: React.FC<LogsModalProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [containerId]);
+
+  useEffect(() => {
+    if (show && containerId) {
+      loadLogs();
+    }
+  }, [show, containerId, loadLogs]);
+
+  useEffect(() => {
+    if (autoScroll && logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [logs, autoScroll]);
+
 
   const loadMoreLogs = async () => {
     try {

@@ -25,25 +25,89 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children, 
       ws.current.close();
     }
 
-    // Get the WebSocket URL from environment or fallback to current host
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = process.env.REACT_APP_WS_URL || window.location.host;
-    const wsUrl = `${protocol}//${host}/api/v1/logs/ws/logs/all`;
+    // In development, connect directly to the backend server
+    // In production, use the same host as the frontend but with ws(s) protocol
+    const isDev = process.env.NODE_ENV === 'development';
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     
-    console.log('Connecting to WebSocket:', wsUrl);
-    ws.current = new WebSocket(wsUrl);
+    // Get container ID from URL or use 'all' to get logs from all containers
+    const pathParts = window.location.pathname.split('/');
+    const containerId = pathParts[pathParts.length - 1] || 'all';
+    
+    // Construct WebSocket URL
+    let wsUrl: string;
+    
+    if (process.env.REACT_APP_WS_URL) {
+      // If WS URL is explicitly set in environment, use it
+      wsUrl = `${process.env.REACT_APP_WS_URL}/ws/logs/${containerId}`;
+    } else if (isDev) {
+      // In development, connect directly to the backend server
+      const host = window.location.hostname;
+      const port = '8093'; // Default backend port
+      wsUrl = `${wsProtocol}//${host}:${port}/ws/logs/${containerId}`;
+    } else {
+      // In production, use the same host as the frontend
+      const host = window.location.host;
+      wsUrl = `${wsProtocol}//${host}/ws/logs/${containerId}`;
+    }
+    
+    // Clean up any potential double slashes
+    const cleanWsUrl = wsUrl.replace(/([^:]\/)\/+/g, '$1');
+    
+    console.log('Connecting to WebSocket:', cleanWsUrl);
+    ws.current = new WebSocket(cleanWsUrl);
     
     // Set up periodic heartbeat
     const heartbeatInterval = setInterval(() => {
       if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-        ws.current.send(JSON.stringify({ type: 'heartbeat' }));
+        try {
+          ws.current.send(JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }));
+        } catch (error) {
+          console.error('Error sending heartbeat:', error);
+        }
       }
     }, 30000); // Send heartbeat every 30 seconds
 
-    ws.current.onopen = () => {
-      console.log('WebSocket connected');
+    ws.current.onopen = (event) => {
+      console.log('WebSocket connected successfully');
+      console.debug('WebSocket connection details:', {
+        url: ws.current?.url,
+        protocol: ws.current?.protocol,
+        extensions: ws.current?.extensions,
+        binaryType: ws.current?.binaryType
+      });
       setIsConnected(true);
       reconnectAttempts.current = 0;
+    };
+
+    ws.current.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      console.error('WebSocket readyState:', ws.current?.readyState);
+      setIsConnected(false);
+    };
+
+    ws.current.onclose = (event) => {
+      console.log(`WebSocket closed: ${event.code} ${event.reason || 'No reason provided'}`);
+      console.debug('Close event details:', {
+        wasClean: event.wasClean,
+        code: event.code,
+        reason: event.reason
+      });
+      setIsConnected(false);
+      clearInterval(heartbeatInterval);
+      
+      // Attempt to reconnect with exponential backoff
+      if (reconnectAttempts.current < maxReconnectAttempts) {
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
+        console.log(`Attempting to reconnect in ${delay}ms (attempt ${reconnectAttempts.current + 1}/${maxReconnectAttempts})`);
+        
+        reconnectTimeout.current = setTimeout(() => {
+          reconnectAttempts.current++;
+          connect();
+        }, delay);
+      } else {
+        console.error('Max reconnection attempts reached');
+      }
     };
 
     ws.current.onmessage = (event) => {

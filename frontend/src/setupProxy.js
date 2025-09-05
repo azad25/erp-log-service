@@ -1,21 +1,39 @@
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
 module.exports = function(app) {
+  // Proxy API requests
   app.use(
     '/api',
     createProxyMiddleware({
-      target: 'http://localhost:8093', // Backend server URL
+      target: 'http://localhost:8093',
       changeOrigin: true,
-      ws: true, // Enable WebSocket proxy
-      // Don't rewrite the path - keep /api prefix
+      ws: false, // Disable WebSocket proxy for API routes
+      logLevel: 'debug',
       onError: (err, req, res) => {
-        console.error('Proxy error:', err);
+        console.error('API Proxy error:', err);
         if (res && typeof res.writeHead === 'function') {
           res.writeHead(500, {
             'Content-Type': 'application/json',
           });
-          res.end(JSON.stringify({ error: 'Proxy Error', details: err.message }));
+          res.end(JSON.stringify({ error: 'API Proxy Error', details: err.message }));
         }
+      },
+    })
+  );
+
+  // Proxy WebSocket connections for logs
+  app.use(
+    '/ws',
+    createProxyMiddleware({
+      target: 'http://localhost:8093',
+      changeOrigin: true,
+      ws: true,
+      logLevel: 'debug',
+      onError: (err, req, res) => {
+        console.error('WebSocket Proxy error:', err);
+      },
+      onProxyReqWs: (proxyReq, req, socket, options, head) => {
+        console.log('Proxying WebSocket connection to:', req.url);
       },
     })
   );

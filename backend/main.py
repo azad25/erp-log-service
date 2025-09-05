@@ -45,18 +45,92 @@ app = FastAPI(
     on_shutdown=[shutdown_event]
 )
 
-# Add CORS middleware
+# Configure CORS middleware
+# Note: CORS doesn't actually apply to WebSocket connections, but we need it for HTTP
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3004", "http://localhost:8093", "http://localhost:8092"],
+    allow_origins=["*"],  # In production, replace with specific origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
+    expose_headers=["*"]
 )
 
+# Middleware to handle WebSocket upgrade requests
+# This middleware needs to be careful not to interfere with WebSocket connections
+@app.middleware("http")
+async def websocket_upgrade_middleware(request, call_next):
+    # Skip middleware for WebSocket connections
+    if "upgrade" in request.headers.get("connection", "").lower() and \
+       request.headers.get("upgrade", "").lower() == "websocket":
+        return await call_next(request)
+        
+    # Handle WebSocket upgrade requests
+    if "upgrade" in request.headers.get("connection", "").lower() and \
+       request.headers.get("upgrade", "").lower() == "websocket":
+        # Get the subprotocols if any
+        subprotocols = []
+        if "sec-websocket-protocol" in request.headers:
+            subprotocols = [p.strip() for p in request.headers["sec-websocket-protocol"].split(",")]
+        
+        # Create a new response for the WebSocket handshake
+        response = await call_next(request)
+        
+        # Add required WebSocket headers
+        response.headers["Upgrade"] = "websocket"
+        response.headers["Connection"] = "Upgrade"
+        response.headers["Sec-WebSocket-Accept"] = request.headers.get("sec-websocket-key", "")
+        
+        # Add CORS headers for WebSocket connections
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        
+        # If client sent subprotocols, accept the first one
+        if subprotocols:
+            response.headers["Sec-WebSocket-Protocol"] = subprotocols[0]
+            
+        return response
+    
+    # For regular HTTP requests, just call the next middleware
+    response = await call_next(request)
+    
+    # Add CORS headers for regular HTTP requests to WebSocket endpoints
+    if request.url.path.startswith(f"{settings.API_V1_STR}/ws/"):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+    
+    return response
+
+# Store settings in app state for access in routers
+app.state.settings = settings
+
 # Include API routes
+from app.api import api_router
 app.include_router(api_router, prefix=settings.API_V1_STR)
+
+# Register WebSocket endpoint at the root level
+from app.api.endpoints import logs
+
+@app.websocket("/ws/logs/{container_id}")
+async def websocket_endpoint(websocket: WebSocket, container_id: str):
+    return await logs.websocket_endpoint(websocket, container_id)
+
+# Debug endpoint to list all routes
+@app.get("/debug/routes")
+async def debug_routes():
+    routes = []
+    for route in app.routes:
+        route_info = {
+            "path": getattr(route, "path", ""),
+            "name": getattr(route, "name", ""),
+            "methods": getattr(route, "methods", []),
+            "endpoint": route.endpoint.__name__ if hasattr(route, "endpoint") else "",
+            "type": "websocket" if hasattr(route, "is_websocket") and route.is_websocket else "http"
+        }
+        routes.append(route_info)
+    return {"routes": routes}
 
 # Root endpoint
 @app.get("/")
@@ -65,47 +139,9 @@ async def root():
         "name": settings.PROJECT_NAME,
         "version": settings.VERSION,
         "docs": "/docs",
-        "websocket": f"ws://{settings.HOST}:{settings.PORT}{settings.API_V1_STR}/logs/ws/logs/{{container_id}}"
+        "websocket": f"ws://{settings.HOST}:{settings.PORT}/ws/logs/{{container_id}}",
+        "debug_routes": "/debug/routes"
     }
-
-# WebSocket endpoint for logs
-@app.websocket(f"{settings.API_V1_STR}/logs/ws/logs/{{container_id}}")
-async def websocket_logs(websocket: WebSocket, container_id: str):
-    """WebSocket endpoint for streaming logs"""
-    await websocket.accept()
-    
-    try:
-        # Get streamer instance
-        log_streamer = get_log_streamer()
-        
-        # Add WebSocket to active connections
-        await log_streamer.add_websocket(websocket, container_id)
-        
-        # Keep connection alive and handle messages
-        while True:
-            try:
-                # Receive messages to detect disconnection and handle heartbeat
-                message = await websocket.receive_text()
-                data = json.loads(message)
-                
-                # Handle heartbeat
-                if data.get('type') == 'heartbeat':
-                    await websocket.send_text(json.dumps({'type': 'heartbeat_ack'}))
-                    
-            except json.JSONDecodeError:
-                # Ignore invalid JSON messages
-                continue
-            except WebSocketDisconnect:
-                break
-            
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for container: {container_id}")
-    except Exception as e:
-        logger.error(f"WebSocket error: {str(e)}")
-    finally:
-        # Clean up
-        log_streamer = get_log_streamer()
-        await log_streamer.remove_websocket(websocket, container_id)
 
 if __name__ == "__main__":
     import uvicorn

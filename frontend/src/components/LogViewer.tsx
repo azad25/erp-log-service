@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { LogEntry } from '../types/logs';
 
 interface LogViewerProps {
@@ -6,22 +6,61 @@ interface LogViewerProps {
   selectedContainer: string;
   isLoading: boolean;
   isConnected: boolean;
+  onFilterChange?: (filter: { level: string; search: string }) => void;
 }
 
-const LogViewer: React.FC<LogViewerProps> = ({ logs, selectedContainer, isLoading, isConnected }) => {
+const LogViewer: React.FC<LogViewerProps> = ({
+  logs,
+  selectedContainer,
+  isLoading,
+  isConnected,
+  onFilterChange,
+}) => {
   const endOfLogsRef = useRef<HTMLDivElement>(null);
-
+  const logContainerRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [showTimestamps, setShowTimestamps] = useState(true);
   const [filter, setFilter] = useState('');
   const [selectedLogLevel, setSelectedLogLevel] = useState('all');
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
-  // Auto-scroll to bottom when new logs arrive
+  // Handle scroll events to detect if user is at bottom
+  const handleScroll = useCallback(() => {
+    if (!logContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = logContainerRef.current;
+    const isBottom = scrollHeight - scrollTop <= clientHeight + 50; // 50px threshold
+    setIsAtBottom(isBottom);
+    
+    // If user scrolls to bottom, re-enable auto-scroll
+    if (isBottom) {
+      setAutoScroll(true);
+    } else if (autoScroll) {
+      setAutoScroll(false);
+    }
+  }, [autoScroll]);
+
+  // Auto-scroll to bottom when new logs arrive and autoScroll is true
   useEffect(() => {
-    if (autoScroll && endOfLogsRef.current) {
+    if (autoScroll && isAtBottom && endOfLogsRef.current) {
       endOfLogsRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [logs, autoScroll]);
+  }, [logs, autoScroll, isAtBottom]);
+
+  // Add scroll event listener
+  useEffect(() => {
+    const container = logContainerRef.current;
+    if (container) {
+      container.addEventListener('scroll', handleScroll);
+      return () => container.removeEventListener('scroll', handleScroll);
+    }
+  }, [handleScroll]);
+
+  // Auto-scroll to bottom on initial load
+  useEffect(() => {
+    if (endOfLogsRef.current) {
+      endOfLogsRef.current.scrollIntoView();
+    }
+  }, []);
 
   const formatTimestamp = (timestamp: string) => {
     try {
@@ -39,23 +78,6 @@ const LogViewer: React.FC<LogViewerProps> = ({ logs, selectedContainer, isLoadin
 
   const formatLogLevel = (level: string) => {
     return level?.toUpperCase() || 'INFO';
-  };
-
-  const getLogLevelColor = (level: string) => {
-    switch (level?.toLowerCase()) {
-      case 'error':
-      case 'fatal':
-        return '#dc3545';
-      case 'warn':
-      case 'warning':
-        return '#ffc107';
-      case 'info':
-        return '#0dcaf0';
-      case 'debug':
-        return '#6c757d';
-      default:
-        return '#6c757d';
-    }
   };
 
   const getLogLevelBadge = (level: string) => {
@@ -77,12 +99,24 @@ const LogViewer: React.FC<LogViewerProps> = ({ logs, selectedContainer, isLoadin
 
   const filteredLogs = useMemo(() => {
     return logs.filter(log => {
-      const matchesFilter = !filter || log.message.toLowerCase().includes(filter.toLowerCase());
+      const message = log.message || '';
+      const level = log.level || '';
+      const matchesFilter = !filter || message.toLowerCase().includes(filter.toLowerCase());
       const matchesLevel = selectedLogLevel === 'all' || 
-        (log.level && log.level.toLowerCase() === selectedLogLevel.toLowerCase());
+        level.toLowerCase() === selectedLogLevel.toLowerCase();
       return matchesFilter && matchesLevel;
     });
   }, [logs, filter, selectedLogLevel]);
+
+  // Notify parent component of filter changes
+  useEffect(() => {
+    if (onFilterChange) {
+      onFilterChange({
+        level: selectedLogLevel,
+        search: filter
+      });
+    }
+  }, [selectedLogLevel, filter, onFilterChange]);
 
   const logLevels = useMemo(() => {
     const levels = new Set(logs.map(log => log.level?.toLowerCase()).filter(Boolean));
@@ -123,32 +157,44 @@ const LogViewer: React.FC<LogViewerProps> = ({ logs, selectedContainer, isLoadin
     );
   }
 
-  const getLogEntryClass = (level: string, index: number) => {
-    const baseClass = 'log-entry p-2 mb-1 rounded border-start border-3 slide-in';
-    const isError = level === 'ERROR' || level === 'FATAL';
-    const isWarning = level === 'WARN' || level === 'WARNING';
-    
-    let bgClass = 'bg-dark';
-    let borderClass = 'border-secondary';
-    
-    if (isError) {
-      bgClass = 'bg-danger bg-opacity-10';
-      borderClass = 'border-danger';
-    } else if (isWarning) {
-      bgClass = 'bg-warning bg-opacity-10';
-      borderClass = 'border-warning';
-    } else {
-      bgClass = 'bg-success bg-opacity-10';
-      borderClass = 'border-success';
-    }
-    
-    return `${baseClass} ${bgClass} ${borderClass}`;
-  };
-
   return (
-    <div className="log-viewer h-100 d-flex flex-column bg-dark text-light">
-      {/* Header with Controls */}
-      <div className="log-viewer-header bg-secondary p-3 border-bottom border-dark">
+    <div className="log-viewer-container d-flex flex-column h-100">
+      <div className="log-content flex-grow-1 overflow-auto bg-dark text-light" ref={logContainerRef}>
+        {filteredLogs.length === 0 ? (
+          <div className="d-flex justify-content-center align-items-center h-100">
+            <div className="text-center">
+              <i className="bi bi-file-text display-4 text-muted mb-3"></i>
+              <p className="text-muted">
+                {filter || selectedLogLevel !== 'all' 
+                  ? 'No logs match the current filters.'
+                  : 'No logs available.'}
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="p-2">
+            {filteredLogs.map((log, index) => (
+              <div 
+                key={`${log.timestamp}-${index}`} 
+                className="log-entry mb-1 font-monospace"
+                style={{ fontSize: '0.85rem', lineHeight: '1.3' }}
+              >
+                {showTimestamps && (
+                  <span className="text-muted me-2">
+                    {formatTimestamp(log.timestamp)}
+                  </span>
+                )}
+                <span className={`badge ${getLogLevelBadge(log.level || 'info')} me-2`}>
+                  {formatLogLevel(log.level || 'info')}
+                </span>
+                <span className="log-message">{log.message}</span>
+              </div>
+            ))}
+            <div ref={endOfLogsRef} />
+          </div>
+        )}
+      </div>
+      <div className="log-viewer-header bg-secondary p-3 border-top border-dark">
         <div className="d-flex justify-content-between align-items-center mb-2">
           <h6 className="mb-0 text-light">
             <i className="bi bi-file-text me-2"></i>
@@ -171,8 +217,6 @@ const LogViewer: React.FC<LogViewerProps> = ({ logs, selectedContainer, isLoadin
             </span>
           </div>
         </div>
-
-        {/* Controls */}
         <div className="row g-2">
           <div className="col-md-4">
             <div className="input-group input-group-sm">
