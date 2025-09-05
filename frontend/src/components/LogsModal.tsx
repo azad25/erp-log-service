@@ -196,7 +196,9 @@ const LogsModal: React.FC<LogsModalProps> = ({
             height: '60vh', 
             overflowY: 'auto',
             fontFamily: 'Monaco, Consolas, "Courier New", monospace',
-            fontSize: '0.85rem'
+            fontSize: '0.85rem',
+            backgroundColor: 'white',
+            color: 'black'
           }}
           onScroll={handleScroll}
         >
@@ -244,9 +246,11 @@ const LogsModal: React.FC<LogsModalProps> = ({
                       ? 'bg-danger bg-opacity-10 border-danger' 
                       : log.level?.toLowerCase() === 'warn' || log.level?.toLowerCase() === 'warning'
                       ? 'bg-warning bg-opacity-10 border-warning'
-                      : 'bg-success bg-opacity-10 border-success'
+                      : 'bg-light bg-opacity-100 border-secondary'
                   }`}
                   style={{
+                    backgroundColor: 'white',
+                    color: 'black',
                     wordBreak: 'break-word',
                     whiteSpace: 'pre-wrap'
                   }}
@@ -255,7 +259,7 @@ const LogsModal: React.FC<LogsModalProps> = ({
                     <Badge bg={getLogLevelColor(log.level || 'info')} className="me-2">
                       {log.level || 'INFO'}
                     </Badge>
-                    <small className="text-muted">
+                    <small className="text-dark">
                       {formatTime(log.timestamp)}
                     </small>
                   </div>
@@ -263,7 +267,7 @@ const LogsModal: React.FC<LogsModalProps> = ({
                     {log.message || log.raw}
                   </div>
                   {log.service && (
-                    <small className="text-muted">
+                    <small className="text-dark">
                       Service: {log.service}
                     </small>
                   )}

@@ -122,13 +122,14 @@ const ContainerList: React.FC<ContainerListProps> = ({
                   <div className="flex-grow-1">
                     <h6 className="mb-1 d-flex align-items-center">
                       <i className={`bi ${isRunning ? 'bi-play-circle text-success' : 'bi-stop-circle text-danger'} me-2`}></i>
-                      <span className="text-truncate">{container.name.replace('erp-suite-', '')}</span>
+                      <span className="text-truncate" style={{ color: '#3498db' }}>{container.name.replace('erp-suite-', '')}</span>
                     </h6>
-                    <p className="mb-0 text-muted small text-truncate">{container.image}</p>
+                    <p className="mb-0 small text-truncate" style={{ color: 'white' }}>{container.image}</p>
                   </div>
                   <div className="text-end d-flex align-items-center gap-2">
                     <button
-                      className="btn btn-outline-info btn-sm info-btn"
+                      className="btn btn-outline-danger btn-sm info-btn"
+                      style={{ borderColor: '#dc3545', color: '#dc3545' }}
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedContainerDetails(container);
@@ -176,11 +177,12 @@ const ContainerList: React.FC<ContainerListProps> = ({
                       <i className={`bi ${isRunning ? 'bi-database text-info' : 'bi-stop-circle text-danger'} me-2`}></i>
                       <span className="text-truncate">{container.name.replace('erp-suite-', '')}</span>
                     </h6>
-                    <p className="mb-0 text-muted small text-truncate">{container.image}</p>
+                    <p className="mb-0 small text-truncate" style={{ color: 'white' }}>{container.image}</p>
                   </div>
                   <div className="text-end d-flex align-items-center gap-2">
                     <button
-                      className="btn btn-outline-info btn-sm info-btn"
+                      className="btn btn-outline-danger btn-sm info-btn"
+                      style={{ borderColor: '#dc3545', color: '#dc3545' }}
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedContainerDetails(container);

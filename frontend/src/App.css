@@ -8,6 +8,11 @@ html, body {
   padding: 0;
 }
 
+.list-group-item.active {
+  background-color: #3498db !important;
+  border-color: #3498db !important;
+}
+
 .app {
   background-color: #121212;
   color: #e0e0e0;
@@ -85,7 +90,7 @@ header {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background-color: #1a1a1a;
+  background-color: #f5f5f5; /* Light gray background */
   min-height: 0; /* Important for flex children */
 }
 
@@ -95,9 +100,14 @@ header {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 16px;
-  background-color: #121212;
-  color: #e0e0e0;
+  background-color: transparent;
+  color: #2d3436;
   min-height: 0; /* Important for Firefox */
+}
+
+/* Timestamp styling */
+.log-entry .text-muted {
+  color: #0984e3 !important; /* Blue timestamp */
 }
 
 /* Log entry container - if you have a separate container for entries */
@@ -197,17 +207,33 @@ header {
 
 /* Log entry */
 .log-entry {
-  font-family: 'Fira Code', 'Consolas', 'Monaco', 'Courier New', monospace;
-  font-size: 0.85rem;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.9rem;
   line-height: 1.4;
-  padding: 4px 8px;
-  margin: 2px 0;
-  border-radius: 3px;
-  border-left: 3px solid transparent;
-  transition: all 0.2s ease;
   white-space: pre-wrap;
-  word-break: break-word;
-  animation: slideInFromTop 0.2s ease-out;
+  word-break: break-all;
+}
+
+.log-message {
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+  background-color: #f8f9fa;
+  padding: 8px 12px;
+  border-radius: 4px;
+  border-left: 3px solid #dee2e6;
+  margin-top: 4px;
+  color: #212529;
+}
+
+.log-message code {
+  font-family: 'Roboto Mono', monospace;
+  background-color: transparent;
+  padding: 0;
+  color: inherit;
+  white-space: pre;
 }
 
 /* Log entry animations */

@@ -120,7 +120,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
       case 'warning':
         return 'warning';
       case 'info':
-        return 'info';
+        return 'success';
       case 'debug':
         return 'secondary';
       default:
@@ -159,8 +159,8 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
 
   return (
     <>
-      <Modal show={show} onHide={onHide} size="lg" className="container-details-modal">
-        <Modal.Header closeButton className="bg-dark text-light border-secondary">
+      <Modal show={show} onHide={onHide} size="lg" className="container-details-modal" contentClassName="bg-white">
+        <Modal.Header closeButton className="bg-light border-secondary">
           <Modal.Title className="d-flex align-items-center">
             <i className={`bi ${isRunning ? 'bi-play-circle text-success' : 'bi-stop-circle text-danger'} me-2`}></i>
             {container.name.replace('erp-suite-', '')}
@@ -170,7 +170,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
           </Modal.Title>
         </Modal.Header>
         
-        <Modal.Body className="bg-dark text-light">
+        <Modal.Body className="bg-white text-dark">
           {/* Action Buttons */}
           <div className="mb-4">
             <div className="d-flex gap-2 flex-wrap">
@@ -215,17 +215,17 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
           {/* Container Info */}
           <Row className="mb-4">
             <Col md={6}>
-              <Card className="bg-secondary text-light h-100">
+              <Card className="bg-light text-dark h-100 border">
                 <Card.Header>
                   <i className="bi bi-info-circle me-2"></i>
                   Container Information
                 </Card.Header>
                 <Card.Body>
                   <div className="mb-2">
-                    <strong>ID:</strong> <code className="text-info">{container.id}</code>
+                    <strong>ID:</strong> <code className="text-primary">{container.id}</code>
                   </div>
                   <div className="mb-2">
-                    <strong>Image:</strong> <code className="text-warning">{container.image}</code>
+                    <strong>Image:</strong> <code className="text-dark">{container.image}</code>
                   </div>
                   <div className="mb-2">
                     <strong>Created:</strong> {container.created ? formatTime(container.created) : 'N/A'}
@@ -241,7 +241,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
                         ))}
                       </div>
                     ) : (
-                      <span className="text-muted"> None exposed</span>
+                      <span className="text-secondary"> None exposed</span>
                     )}
                   </div>
                 </Card.Body>
@@ -249,7 +249,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
             </Col>
             
             <Col md={6}>
-              <Card className="bg-secondary text-light h-100">
+              <Card className="bg-light text-dark h-100 border">
                 <Card.Header>
                   <i className="bi bi-speedometer2 me-2"></i>
                   Resource Usage
@@ -299,7 +299,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
           </Row>
 
           {/* Recent Logs */}
-          <Card className="bg-secondary text-light">
+          <Card className="bg-light text-dark border">
             <Card.Header className="d-flex justify-content-between align-items-center">
               <span>
                 <i className="bi bi-journal-text me-2"></i>
@@ -335,21 +335,49 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
                       }}
                     >
                       <div className="d-flex justify-content-between align-items-start mb-1">
-                        <Badge bg={getLogLevelColor(log.level || 'info')} className="me-2">
+                        <Badge 
+                          bg={getLogLevelColor(log.level || 'info')} 
+                          className="me-2" 
+                          style={{
+                            backgroundColor: getLogLevelColor(log.level || 'info') === 'success' ? '#d4edda' : undefined,
+                            color: getLogLevelColor(log.level || 'info') === 'success' ? '#155724' : 'white'
+                          }}
+                        >
                           {log.level || 'INFO'}
                         </Badge>
-                        <small className="text-muted">
+                        <small className="text-dark">
                           {formatTime(log.timestamp)}
                         </small>
                       </div>
                       <div className="log-message">
-                        {log.message || log.raw}
+                        {(() => {
+                          try {
+                            // Try to parse as JSON for pretty printing
+                            const message = log.message || log.raw || '';
+                            const jsonMatch = message.match(/^({[\s\S]*}|\[[\s\S]*\])$/);
+                            
+                            if (jsonMatch) {
+                              const parsed = JSON.parse(message);
+                              return (
+                                <pre className="mb-0">
+                                  <code>
+                                    {JSON.stringify(parsed, null, 2)}
+                                  </code>
+                                </pre>
+                              );
+                            }
+                            return <code>{message}</code>;
+                          } catch (e) {
+                            // If not valid JSON, return as plain text
+                            return <code>{log.message || log.raw}</code>;
+                          }
+                        })()}
                       </div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="text-center text-muted py-3">
+                <div className="text-center text-secondary py-3">
                   <i className="bi bi-journal-x fs-1"></i>
                   <div>No logs available</div>
                 </div>
@@ -358,7 +386,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
           </Card>
         </Modal.Body>
         
-        <Modal.Footer className="bg-dark border-secondary">
+        <Modal.Footer className="bg-light border-secondary">
           <Button variant="secondary" onClick={onHide}>
             Close
           </Button>

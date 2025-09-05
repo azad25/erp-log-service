@@ -87,7 +87,7 @@ const LogViewer: React.FC<LogViewerProps> = ({
       err: 'bg-danger',
       warn: 'bg-warning text-dark',
       warning: 'bg-warning text-dark',
-      info: 'bg-info',
+      info: 'bg-success',
       debug: 'bg-secondary',
       trace: 'bg-light text-dark',
       fatal: 'bg-danger',
@@ -159,7 +159,7 @@ const LogViewer: React.FC<LogViewerProps> = ({
 
   return (
     <div className="log-viewer-container d-flex flex-column h-100">
-      <div className="log-content flex-grow-1 overflow-auto bg-dark text-light" ref={logContainerRef}>
+      <div className="log-content flex-grow-1 overflow-auto" style={{ backgroundColor: 'transparent', color: '#000' }} ref={logContainerRef}>
         {filteredLogs.length === 0 ? (
           <div className="d-flex justify-content-center align-items-center h-100">
             <div className="text-center">
@@ -180,11 +180,11 @@ const LogViewer: React.FC<LogViewerProps> = ({
                 style={{ fontSize: '0.85rem', lineHeight: '1.3' }}
               >
                 {showTimestamps && (
-                  <span className="text-muted me-2">
+                  <span className="fw-bold" style={{ color: '#ff0000' }}>
                     {formatTimestamp(log.timestamp)}
                   </span>
                 )}
-                <span className={`badge ${getLogLevelBadge(log.level || 'info')} me-2`}>
+                <span className={`badge ${getLogLevelBadge(log.level || 'info')} me-3 mx-1`}>
                   {formatLogLevel(log.level || 'info')}
                 </span>
                 <span className="log-message">{log.message}</span>
@@ -212,7 +212,7 @@ const LogViewer: React.FC<LogViewerProps> = ({
                 Disconnected
               </span>
             )}
-            <span className="badge bg-info">
+            <span className="badge bg-success">
               {filteredLogs.length} entries
             </span>
           </div>
