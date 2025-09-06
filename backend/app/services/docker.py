@@ -297,6 +297,37 @@ class DockerService:
 
         return 'service'
 
+    def _is_infrastructure_service(self, container_info: Dict[str, Any]) -> bool:
+        """Determine if a container is an infrastructure service."""
+        name = container_info['name'].lower()
+        image = container_info['image'].lower()
+        labels = container_info.get('labels', {})
+        
+        # Common infrastructure services
+        infra_keywords = [
+            'postgres', 'mysql', 'mariadb', 'mongodb', 'redis',
+            'nginx', 'traefik', 'haproxy', 'caddy',
+            'prometheus', 'grafana', 'kibana', 'elasticsearch',
+            'rabbitmq', 'kafka', 'zookeeper',
+            'consul', 'vault', 'etcd'
+        ]
+        
+        # Check name and image for infrastructure keywords
+        for keyword in infra_keywords:
+            if keyword in name or keyword in image:
+                return True
+        
+        # Check Docker Compose labels
+        service_name = labels.get('com.docker.compose.service', '').lower()
+        if any(keyword in service_name for keyword in infra_keywords):
+            return True
+            
+        # Check for common infrastructure patterns
+        if any(pattern in name for pattern in ['-db', '-database', '-cache', '-proxy', '-lb']):
+            return True
+            
+        return False
+
     def _get_status_badge(self, status: str) -> Dict[str, str]:
         """Get status badge information for the frontend."""
         status = status.lower()
@@ -378,19 +409,48 @@ class DockerService:
             )
             stdout, stderr = await proc.communicate()
             
+            # Debug logging
+            logger.info(f"Docker logs command: {' '.join(cmd)}")
+            logger.info(f"Return code: {proc.returncode}")
+            logger.info(f"Stdout length: {len(stdout.decode()) if stdout else 0}")
+            logger.info(f"Stderr: {stderr.decode() if stderr else 'None'}")
+            
             logs = []
-            for line in stdout.decode().splitlines():
-                if timestamps and ' ' in line:
-                    timestamp, message = line.split(' ', 1)
+            # Docker logs can be written to both stdout and stderr, combine them
+            all_output = stdout.decode() + stderr.decode()
+            for line in all_output.splitlines():
+                line = line.strip()
+                if not line:  # Skip empty lines
+                    continue
+                    
+                if timestamps and line:
+                    # Docker timestamp format: 2025-09-06T03:10:58.890010636Z MESSAGE
+                    # Find the first space after the timestamp (which ends with Z)
+                    timestamp_end = line.find('Z ')
+                    if timestamp_end != -1:
+                        timestamp = line[:timestamp_end + 1]
+                        message = line[timestamp_end + 2:].strip()
+                    else:
+                        # Fallback: treat entire line as message with current timestamp
+                        timestamp = datetime.utcnow().isoformat() + 'Z'
+                        message = line.strip()
+                    
+                    # Skip entries with empty messages
+                    if not message:
+                        continue
+                        
                     logs.append({
                         'timestamp': timestamp,
                         'message': message,
+                        'level': 'INFO',  # Default level, can be enhanced with parsing
                         'container_id': container_id
                     })
                 else:
+                    # Handle lines without timestamps
                     logs.append({
-                        'timestamp': datetime.utcnow().isoformat(),
-                        'message': line,
+                        'timestamp': datetime.utcnow().isoformat() + 'Z',
+                        'message': line.strip(),
+                        'level': 'INFO',
                         'container_id': container_id
                     })
             return logs
@@ -520,7 +580,42 @@ class DockerService:
                 if proc.returncode != 0:
                     logger.error(f"Failed to get container stats: {stderr.decode()}")
                     return {}
-                return json.loads(stdout.decode())
+                    
+                raw_stats = json.loads(stdout.decode())
+                
+                # Parse memory usage (format: "123.4MiB / 1.234GiB")
+                mem_usage_str = raw_stats.get('MemUsage', '0B / 0B')
+                mem_parts = mem_usage_str.split(' / ')
+                mem_usage_mb = self._parse_memory_size(mem_parts[0]) if len(mem_parts) > 0 else 0
+                mem_limit_mb = self._parse_memory_size(mem_parts[1]) if len(mem_parts) > 1 else 1024
+                
+                # Parse network I/O (format: "123.4kB / 456.7kB")
+                network_io_str = raw_stats.get('NetIO', '0B / 0B')
+                net_parts = network_io_str.split(' / ')
+                net_rx = self._parse_memory_size(net_parts[0]) if len(net_parts) > 0 else 0
+                net_tx = self._parse_memory_size(net_parts[1]) if len(net_parts) > 1 else 0
+                
+                # Parse block I/O (format: "123.4MB / 456.7MB")
+                block_io_str = raw_stats.get('BlockIO', '0B / 0B')
+                block_parts = block_io_str.split(' / ')
+                block_read = self._parse_memory_size(block_parts[0]) if len(block_parts) > 0 else 0
+                block_write = self._parse_memory_size(block_parts[1]) if len(block_parts) > 1 else 0
+                
+                # Convert Docker CLI format to structured format matching frontend expectations
+                return {
+                    'cpu_percent': float(raw_stats.get('CPUPerc', '0.00%').replace('%', '')),
+                    'cpu_count': 1,  # Default, could be enhanced by parsing /proc/cpuinfo
+                    'memory_usage': mem_usage_mb,  # In MB
+                    'memory_limit': mem_limit_mb,  # In MB
+                    'memory_percent': float(raw_stats.get('MemPerc', '0.00%').replace('%', '')),
+                    'network_rx': int(net_rx),
+                    'network_tx': int(net_tx),
+                    'block_read': int(block_read),
+                    'block_write': int(block_write),
+                    'pids': int(raw_stats.get('PIDs', '0')),
+                    'container_name': raw_stats.get('Name', container_id),
+                    'container_id': raw_stats.get('ID', container_id)
+                }
         except Exception as e:
             logger.error(f"Error getting container stats for {container_id}: {e}")
             return {}
@@ -555,6 +650,39 @@ class DockerService:
                 return (cpu_delta / system_delta) * num_cpus * 100
             return 0.0
         except Exception:
+            return 0.0
+
+    def _parse_memory_size(self, size_str: str) -> float:
+        """Parse memory size string (e.g., '123.4MiB', '1.5GiB') to MB."""
+        try:
+            size_str = size_str.strip()
+            if not size_str or size_str == '0':
+                return 0.0
+            
+            # Extract number and unit
+            import re
+            match = re.match(r'^([\d.]+)([A-Za-z]*)$', size_str)
+            if not match:
+                return 0.0
+            
+            value = float(match.group(1))
+            unit = match.group(2).upper()
+            
+            # Convert to MB
+            if unit in ['B', '']:
+                return value / (1024 * 1024)
+            elif unit in ['KB', 'KIB']:
+                return value / 1024
+            elif unit in ['MB', 'MIB']:
+                return value
+            elif unit in ['GB', 'GIB']:
+                return value * 1024
+            elif unit in ['TB', 'TIB']:
+                return value * 1024 * 1024
+            else:
+                return value  # Default to MB if unknown unit
+        except Exception as e:
+            logger.error(f"Error parsing memory size '{size_str}': {e}")
             return 0.0
 
     async def get_container_networks(self, container_id: str) -> List[Dict[str, Any]]:
@@ -710,84 +838,112 @@ class DockerService:
         container_id: str,
         since: Optional[datetime] = None,
         until: Optional[datetime] = None,
-        tail: Optional[int] = None,
-        follow: bool = False
-    ) -> AsyncGenerator[Dict[str, Any], None]:
-        """
-        Stream container logs asynchronously.
-        
+        tail: Optional[Union[int, str]] = 0,  
+        follow: bool = True,  
+        timestamps: bool = True,  
+        since_seconds: Optional[int] = None,
+    ) -> AsyncGenerator[str, None]:
+        """Stream logs from a container in real-time by default.
+
         Args:
-            container_id: Container ID or name
-            since: Show logs since timestamp
-            until: Show logs before timestamp
-            tail: Number of lines to show from the end of the logs
-            follow: Keep streaming new log entries
-            
+            container_id: ID of the container
+            since: Show logs since this datetime
+            until: Show logs before this datetime
+            tail: Number of lines to show from the end of the logs (default: 0 for new logs only)
+            follow: Follow log output (default: True for real-time streaming)
+            timestamps: Show timestamps (default: True)
+            since_seconds: Show logs since this many seconds ago
+
         Yields:
-            Dict containing log entry details
+            str: Log line
         """
+        process = None
         try:
+            # Build the docker logs command
             cmd = ['docker', 'logs']
             
-            if since:
-                cmd.extend(['--since', since.isoformat()])
-            if until:
-                cmd.extend(['--until', until.isoformat()])
-            if tail:
-                cmd.extend(['--tail', str(tail)])
+            # Always follow for real-time logs
             if follow:
                 cmd.append('--follow')
                 
-            cmd.extend(['--timestamps', container_id])
+            # Always include timestamps by default
+            if timestamps:
+                cmd.append('--timestamps')
+                
+            # Only include since parameters if explicitly provided
+            if since_seconds is not None:
+                cmd.extend(['--since', f'{since_seconds}s'])
+            elif since is not None:
+                cmd.extend(['--since', since.isoformat()])
+                
+            # If no since parameter is provided and we want real-time only
+            if since_seconds is None and since is None:
+                cmd.extend(['--since', '0s'])  # Get only new logs
+                
+            if until:
+                cmd.extend(['--until', until.isoformat()])
+                
+            # Set tail to 0 by default to only get new logs
+            if tail is not None:
+                cmd.extend(['--tail', str(tail)])
+                
+            cmd.append(container_id)
             
+            logger.debug(f"Running command: {' '.join(cmd)}")
+            
+            # Start the process
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                limit=2**20  # 1MB buffer
+                limit=1024 * 1024  # 1MB buffer
             )
             
+            # Stream the output
             while True:
-                if process.stdout:
-                    line = await process.stdout.readline()
+                try:
+                    line = await asyncio.wait_for(process.stdout.readline(), timeout=1.0)
                     if not line:
-                        break
-                        
-                    try:
-                        decoded_line = line.decode('utf-8').strip()
-                        if not decoded_line:
-                            continue
-                            
-                        # Parse timestamp and message
-                        parts = decoded_line.split(' ', 1)
-                        if len(parts) == 2:
-                            timestamp, message = parts
-                        else:
-                            timestamp = datetime.now().isoformat()
-                            message = decoded_line
-                            
-                        yield {
-                            'container_id': container_id,
-                            'timestamp': timestamp,
-                            'message': message,
-                            'stream': 'stdout'
-                        }
-                    except Exception as e:
-                        logger.error(f"Error processing log line: {e}")
+                        if process.returncode is not None:
+                            break
                         continue
                         
-                if not follow:
-                    break
-                    
-                if process.returncode is not None:
-                    break
-                    
-            if process.returncode is not None and process.returncode != 0:
-                logger.error(f"Docker logs command failed with return code {process.returncode}")
+                    # Only yield non-empty lines
+                    decoded_line = line.decode('utf-8').rstrip()
+                    if decoded_line:
+                        yield decoded_line
+                        
+                except asyncio.TimeoutError:
+                    # Check if process is still running
+                    if process.returncode is not None:
+                        break
+                    continue
+                except Exception as e:
+                    logger.error(f"Error reading from container {container_id}: {e}")
+                    if not follow:
+                        break
+                    continue
+            
+            # Check for any errors
+            if process.returncode != 0:
+                stderr = await process.stderr.read()
+                if stderr:
+                    logger.error(f"Error getting logs for {container_id}: {stderr.decode()}")
                 
+        except asyncio.CancelledError:
+            # Handle cancellation gracefully
+            if process and process.returncode is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    if process.returncode is None:
+                        process.kill()
+            raise
+            
         except Exception as e:
-            logger.error(f"Error streaming logs for container {container_id}: {e}")
-            return
+            logger.error(f"Error in stream_container_logs for {container_id}: {e}")
+            raise
             
     def _get_cached_container(self, container_id: str) -> Optional[Dict[str, Any]]:
         """Get container data from cache if available and not expired."""

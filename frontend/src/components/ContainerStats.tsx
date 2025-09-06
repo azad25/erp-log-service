@@ -22,12 +22,14 @@ const formatPercentage = (value: number, max: number = 100): string => {
 };
 
 const ContainerStats: React.FC<ContainerStatsProps> = ({ containerId, className = '' }) => {
-  const { stats, isLoading, error, startWatching, stopWatching } = useContainerStats();
+  const { stats, isLoading, error, startWatching, stopWatching, isConnected } = useContainerStats();
 
   useEffect(() => {
-    if (containerId) {
+    if (containerId && containerId !== 'all') {
+      console.log('Starting stats watching for container:', containerId);
       startWatching(containerId);
       return () => {
+        console.log('Stopping stats watching for container:', containerId);
         stopWatching(containerId);
       };
     }
@@ -44,6 +46,17 @@ const ContainerStats: React.FC<ContainerStatsProps> = ({ containerId, className 
     );
   }
 
+  if (containerId === 'all') {
+    return (
+      <Card className={className}>
+        <Card.Body className="text-center text-muted">
+          <i className="bi bi-info-circle me-2" />
+          Select a specific container to view real-time statistics
+        </Card.Body>
+      </Card>
+    );
+  }
+
   if (isLoading || !stats || !stats[containerId]) {
     return (
       <Card className={className}>
@@ -52,6 +65,14 @@ const ContainerStats: React.FC<ContainerStatsProps> = ({ containerId, className 
             <span className="visually-hidden">Loading...</span>
           </div>
           <span className="ms-2">Loading container stats...</span>
+          {!isConnected(containerId) && (
+            <div className="mt-2">
+              <small className="text-warning">
+                <i className="bi bi-exclamation-triangle me-1" />
+                WebSocket connection not established
+              </small>
+            </div>
+          )}
         </Card.Body>
       </Card>
     );
@@ -79,9 +100,15 @@ const ContainerStats: React.FC<ContainerStatsProps> = ({ containerId, className 
     <Card className={className}>
       <Card.Header className="d-flex justify-content-between align-items-center">
         <span>Container Stats</span>
-        <Badge bg={pids > 0 ? 'success' : 'secondary'} className="ms-2">
-          {pids} {pids === 1 ? 'Process' : 'Processes'}
-        </Badge>
+        <div className="d-flex align-items-center gap-2">
+          <Badge bg={isConnected(containerId) ? 'success' : 'warning'} className="ms-2">
+            <i className={`bi ${isConnected(containerId) ? 'bi-wifi' : 'bi-wifi-off'} me-1`} />
+            {isConnected(containerId) ? 'Live' : 'Disconnected'}
+          </Badge>
+          <Badge bg={pids > 0 ? 'info' : 'secondary'} className="ms-2">
+            {pids} {pids === 1 ? 'Process' : 'Processes'}
+          </Badge>
+        </div>
       </Card.Header>
       <Card.Body>
         <div className="mb-3">

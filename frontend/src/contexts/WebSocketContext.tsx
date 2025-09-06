@@ -121,7 +121,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
     }, PING_INTERVAL);
   }, [safeConsole]);
 
-  // Reconnection logic
+  // Enhanced reconnection logic with exponential backoff and jitter
   const scheduleReconnect = useCallback((containerId: string) => {
     if (isClosing.current[containerId]) return;
     
@@ -132,22 +132,36 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
       return;
     }
     
-    const delay = Math.min(BASE_RECONNECT_DELAY * Math.pow(2, attempts), 30000);
-    safeConsole.log(`Scheduling reconnection for ${containerId} in ${delay}ms (attempt ${attempts + 1})`);
+    // Add jitter to prevent thundering herd problem
+    const jitter = Math.random() * 1000;
+    const delay = Math.min(
+      BASE_RECONNECT_DELAY * Math.pow(2, attempts) + jitter,
+      30000
+    );
+    
+    safeConsole.log(`Scheduling reconnection for ${containerId} in ${Math.round(delay)}ms (attempt ${attempts + 1})`);
     
     reconnectAttempts.current[containerId] = attempts + 1;
     
+    // Clear any existing timeout to prevent multiple reconnection attempts
+    if (reconnectTimeouts.current[containerId]) {
+      clearTimeout(reconnectTimeouts.current[containerId]);
+    }
+    
     reconnectTimeouts.current[containerId] = setTimeout(() => {
       if (!isClosing.current[containerId] && connectRef.current) {
+        safeConsole.log(`Attempting to reconnect to ${containerId}...`);
         connectRef.current(containerId);
       }
     }, delay);
   }, [safeConsole, cleanupConnection]);
 
-  // Connect to WebSocket with better error handling
+  // Connect to WebSocket with enhanced error handling and reconnection
   const connect = useCallback((containerId: string) => {
     // Prevent multiple connections or connecting to closing containers
-    if (connections.current[containerId] || isClosing.current[containerId]) {
+    if (connections.current[containerId]?.readyState === WebSocket.OPEN || 
+        isClosing.current[containerId]) {
+      safeConsole.log(`WebSocket for ${containerId} already exists or is connecting`);
       return;
     }
 
@@ -157,8 +171,19 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
       delete reconnectTimeouts.current[containerId];
     }
 
+    // Close existing connection if it exists
+    if (connections.current[containerId]) {
+      try {
+        connections.current[containerId].close(1000, 'Reconnecting...');
+      } catch (e) {
+        safeConsole.error('Error closing existing connection:', e);
+      }
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/v1/logs/ws/logs/${containerId}`;
+    // Use direct connection to backend for WebSocket connections
+    const wsUrl = `${protocol}//${window.location.hostname}:8093/ws/logs/${containerId}`;
+    safeConsole.log(`Connecting to WebSocket: ${wsUrl}`);
     
     try {
       const ws = new WebSocket(wsUrl);
@@ -194,15 +219,26 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
             return;
           }
           
+          if (data.type === 'ping') {
+            // Respond to ping with pong
+            ws.send(JSON.stringify({ type: 'pong' }));
+            return;
+          }
+          
           if (data.type === 'log') {
             // Ensure the payload is properly structured
             const logEntry = {
               ...data.payload,
               timestamp: data.payload.timestamp || new Date().toISOString(),
               level: data.payload.level || 'info',
-              message: data.payload.message || data.payload.raw || ''
+              message: data.payload.message || data.payload.raw || '',
+              container: data.payload.container_id || containerId, // Map container_id to container
+              containerId: data.payload.container_id || containerId
             };
 
+            // Debug: Log the parsed log entry
+            console.log('WebSocket received log:', logEntry);
+            
             // Dispatch event for real-time log updates
             const logEvent = new CustomEvent('logMessage', {
               detail: {

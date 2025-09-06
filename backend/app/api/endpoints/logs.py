@@ -1,15 +1,17 @@
 import asyncio
 import json
 import logging
-import time
 from datetime import datetime
-from typing import List, Dict, Any
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
+from typing import List, Optional, Dict, Any
 
-from app.core.config import settings
-from app.services.log_streamer import get_log_streamer
-from app.services.docker import get_docker_service
-from app.core.connection_manager import manager  # ✅ use optimized manager
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
+
+from ...core.dependencies import get_log_processor, get_log_streamer, get_docker_service
+from ...services.log_processor import LogProcessor
+from ...services.log_streamer import LogStreamer
+from ...core.connection_manager import manager
+from ...services.docker import DockerService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -18,8 +20,11 @@ logger = logging.getLogger(__name__)
 @router.websocket("/ws/logs/{container_id}")
 async def websocket_endpoint(websocket: WebSocket, container_id: str):
     """
-    WebSocket endpoint for streaming logs from a single container or all containers.
+    WebSocket endpoint for streaming real-time logs from a single container or all containers.
+    By default, only streams new logs as they arrive.
+    
     Features:
+    - Real-time log streaming only (no historical data by default)
     - Multi-container subscription
     - Uses global ConnectionManager for health & keep-alive
     - Graceful cleanup on disconnect
@@ -34,13 +39,28 @@ async def websocket_endpoint(websocket: WebSocket, container_id: str):
         if container_id == "all":
             containers = await log_streamer.processor.get_containers()
             target_containers = [c["id"] for c in containers]
+            
+        # Log the connection attempt
+        logger.info(f"New WebSocket connection for containers: {target_containers}")
 
         # Subscribe websocket to containers
         for cid in target_containers:
             try:
                 await manager.connect(websocket, cid)
                 await log_streamer.add_websocket(websocket, cid)
-                active_containers.add(cid)
+                try:
+                    # Start real-time streaming for this container (no historical data)
+                    await log_streamer.start_streaming(cid)
+                    active_containers.add(cid)
+                    logger.info(f"Started real-time streaming for container: {cid}")
+                except Exception as e:
+                    logger.error(f"Failed to start streaming for container {cid}: {e}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "container_id": cid,
+                        "message": f"Failed to start streaming: {str(e)}",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
             except Exception as e:
                 logger.error(f"Failed to connect to container {cid}: {e}")
 
@@ -57,25 +77,61 @@ async def websocket_endpoint(websocket: WebSocket, container_id: str):
             "timestamp": datetime.utcnow().isoformat(),
         })
 
-        # Main loop
+        # Main loop for handling WebSocket messages
         while True:
             try:
+                # Wait for messages with a timeout to handle ping/pong
                 data = await asyncio.wait_for(websocket.receive_json(), timeout=30.0)
 
                 if not isinstance(data, dict):
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Invalid message format - expected JSON object",
+                        "timestamp": datetime.utcnow().isoformat(),
+                    })
                     continue
 
                 msg_type = data.get("type")
 
-                if msg_type == "pong":
+                if msg_type == "ping":
+                    await websocket.send_json({
+                        "type": "pong",
+                        "timestamp": datetime.utcnow().isoformat(),
+                    })
+                    manager.update_activity(websocket)
+
+                elif msg_type == "pong":
                     manager.update_activity(websocket)
 
                 elif msg_type == "subscribe":
                     new_cid = data.get("container_id")
-                    if new_cid and new_cid not in active_containers:
+                    if not new_cid:
+                        await websocket.send_json({
+                            "type": "subscription_error",
+                            "error": "Missing container_id in subscribe message",
+                            "timestamp": datetime.utcnow().isoformat(),
+                        })
+                        continue
+                        
+                    if new_cid not in active_containers:
                         try:
+                            # Validate container exists
+                            containers = await log_streamer.processor.get_containers()
+                            container_exists = any(c["id"] == new_cid or c.get("name") == new_cid for c in containers)
+                            
+                            if not container_exists:
+                                await websocket.send_json({
+                                    "type": "subscription_error",
+                                    "container_id": new_cid,
+                                    "error": f"Container '{new_cid}' not found",
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                })
+                                continue
+                            
                             await manager.connect(websocket, new_cid)
                             await log_streamer.add_websocket(websocket, new_cid)
+                            # Start streaming for this container
+                            await log_streamer.start_streaming(new_cid)
                             active_containers.add(new_cid)
                             await websocket.send_json({
                                 "type": "subscription_confirmed",
@@ -90,20 +146,71 @@ async def websocket_endpoint(websocket: WebSocket, container_id: str):
                                 "error": str(e),
                                 "timestamp": datetime.utcnow().isoformat(),
                             })
+                    else:
+                        await websocket.send_json({
+                            "type": "subscription_confirmed",
+                            "container_id": new_cid,
+                            "message": "Already subscribed to this container",
+                            "timestamp": datetime.utcnow().isoformat(),
+                        })
 
                 elif msg_type == "filter":
                     filters = data.get("filters", {})
                     logger.debug(f"Filters applied for {container_id}: {filters}")
                     # TODO: integrate with log_streamer filtering
 
+                elif msg_type == "unsubscribe":
+                    unsub_cid = data.get("container_id")
+                    if unsub_cid and unsub_cid in active_containers:
+                        try:
+                            await manager.disconnect(websocket, unsub_cid)
+                            await log_streamer.remove_websocket(websocket, unsub_cid)
+                            active_containers.discard(unsub_cid)
+                            await websocket.send_json({
+                                "type": "unsubscription_confirmed",
+                                "container_id": unsub_cid,
+                                "timestamp": datetime.utcnow().isoformat(),
+                            })
+                            logger.info(f"Unsubscribed from container {unsub_cid}")
+                        except Exception as e:
+                            await websocket.send_json({
+                                "type": "unsubscription_error",
+                                "container_id": unsub_cid,
+                                "error": str(e),
+                                "timestamp": datetime.utcnow().isoformat(),
+                            })
+                    else:
+                        await websocket.send_json({
+                            "type": "unsubscription_error",
+                            "container_id": unsub_cid,
+                            "error": "Not subscribed to this container or container_id missing",
+                            "timestamp": datetime.utcnow().isoformat(),
+                        })
+
+                else:
+                    # Unknown message type
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Unknown message type: {msg_type}",
+                        "timestamp": datetime.utcnow().isoformat(),
+                    })
+
             except asyncio.TimeoutError:
                 # Normal idle timeout, loop continues
                 continue
+            except json.JSONDecodeError:
+                # Malformed JSON
+                try:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Invalid JSON format",
+                        "timestamp": datetime.utcnow().isoformat(),
+                    })
+                except:
+                    pass  # Connection might be broken
+                continue
             except WebSocketDisconnect:
                 break
-            except json.JSONDecodeError:
-                logger.warning("Invalid JSON from client")
-                continue
             except Exception as e:
                 logger.error(f"Message loop error: {e}")
                 break
@@ -125,6 +232,90 @@ async def websocket_endpoint(websocket: WebSocket, container_id: str):
             pass
 
 
+@router.websocket("/ws/stats/{container_id}")
+async def websocket_stats_endpoint(websocket: WebSocket, container_id: str):
+    """
+    WebSocket endpoint for streaming container statistics.
+    Provides real-time CPU, memory, network, and disk usage stats.
+    """
+    docker_service = get_docker_service()
+    
+    try:
+        await manager.connect(websocket, f"stats_{container_id}")
+        logger.info(f"Stats WebSocket connected for container {container_id}")
+        
+        # Send initial connection confirmation
+        await websocket.send_json({
+            "type": "connection_established",
+            "container_id": container_id,
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+        
+        # Main stats streaming loop
+        while True:
+            try:
+                # Check for incoming messages (ping/pong)
+                try:
+                    data = await asyncio.wait_for(websocket.receive_json(), timeout=0.1)
+                    if data.get("type") == "ping":
+                        await websocket.send_json({
+                            "type": "pong",
+                            "timestamp": datetime.utcnow().isoformat(),
+                        })
+                        manager.update_activity(websocket)
+                except asyncio.TimeoutError:
+                    pass  # No message received, continue with stats
+                except Exception as e:
+                    logger.debug(f"Error handling message in stats: {e}")
+                
+                # Get container stats from Docker service
+                stats = await docker_service.get_container_stats(container_id)
+                
+                if stats:
+                    # Format stats for frontend consumption
+                    formatted_stats = {
+                        "type": "stats",
+                        "payload": {
+                            "containerId": container_id,
+                            "cpuUsage": float(stats.get("cpu_percent", 0)),
+                            "cpuCount": int(stats.get("cpu_count", 1)),
+                            "memoryUsage": float(stats.get("memory_usage", 0)),  # Already in MB from Docker service
+                            "memoryLimit": float(stats.get("memory_limit", 1024)),  # Already in MB from Docker service
+                            "networkRx": int(stats.get("network_rx", 0)),
+                            "networkTx": int(stats.get("network_tx", 0)),
+                            "blockRead": int(stats.get("block_read", 0)),
+                            "blockWrite": int(stats.get("block_write", 0)),
+                            "pids": int(stats.get("pids", 0)),
+                        },
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                    
+                    await websocket.send_json(formatted_stats)
+                
+                # Wait before next stats update (1 second interval)
+                await asyncio.sleep(1.0)
+                
+            except Exception as e:
+                logger.error(f"Error getting stats for container {container_id}: {e}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": f"Failed to get container stats: {str(e)}",
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+                await asyncio.sleep(5.0)  # Wait longer on error
+                
+    except WebSocketDisconnect:
+        logger.info(f"Stats WebSocket disconnected for container {container_id}")
+    except Exception as e:
+        logger.error(f"Stats WebSocket error for container {container_id}: {e}")
+    finally:
+        await manager.disconnect(websocket)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 @router.get("/ws/stats")
 async def get_websocket_stats():
     """WebSocket connection stats from ConnectionManager"""
@@ -136,7 +327,7 @@ async def get_websocket_stats():
     }
 
 
-@router.get("/containers", response_model=List[Dict[str, Any]])
+@router.get("/containers")
 async def list_containers():
     """List running Docker containers"""
     try:
@@ -228,4 +419,16 @@ async def restart_container(container_id: str):
             raise HTTPException(status_code=500, detail="Failed to restart container")
     except Exception as e:
         logger.error(f"Error restarting container {container_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/containers/{container_id}/stats")
+async def get_container_stats(container_id: str):
+    """Get container statistics"""
+    try:
+        docker_service = get_docker_service()
+        stats = await docker_service.get_container_stats(container_id)
+        return stats
+    except Exception as e:
+        logger.error(f"Error getting stats for container {container_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

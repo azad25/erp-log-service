@@ -6,202 +6,24 @@ import LogViewer from './components/LogViewer';
 import ContainerList from './components/ContainerList';
 import LogFilterBar from './components/LogFilterBar';
 import ConnectionStatus from './components/ConnectionStatus';
-import { getContainers, getLogs } from './services/api';
+import { WebSocketProvider } from './contexts/WebSocketContext';
+import { ContainerStatsProvider } from './contexts/ContainerStatsContext';
+import { useLogMessages } from './hooks/useLogMessages';
+import { getContainers } from './services/api';
 import './App.css';
 
-const App: FC = () => {
+// Main App Component with WebSocket integration
+const AppContent: FC = () => {
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
   const [selectedContainer, setSelectedContainer] = useState<string>('all');
-  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<LogFilter>({ level: 'all', search: '', container: 'all' });
-  const [connectionStatus, setConnectionStatus] = useState<{
-    isConnected: boolean;
-    lastMessageTime: number | null;
-    connectionError: string | null;
-  }>({
-    isConnected: false,
-    lastMessageTime: null,
-    connectionError: null
-  });
-  
-  const wsRef = useRef<WebSocket | null>(null);
-  const [reconnectAttempts, setReconnectAttempts] = useState<number>(0);
-  const maxReconnectAttempts: number = 5;
-  const lastMessageTimeRef = useRef<number | null>(null);
   const [filteredLogs, setFilteredLogs] = useState<LogEntry[]>([]);
+  
+  // Use the WebSocket hook for log messages
+  const { logs, isConnected, isConnecting } = useLogMessages(selectedContainer === 'all' ? '' : selectedContainer, 1000);
 
-  const connectWebSocket = useCallback((containerId: string) => {
-    // Clean up any existing connection
-    if (wsRef.current) {
-      wsRef.current.close(1000, 'Switching containers');
-      wsRef.current = null;
-      setConnectionStatus(prev => ({
-        ...prev,
-        isConnected: false,
-        connectionError: 'Switching containers'
-      }));
-    }
-
-    if (containerId === 'all') {
-      // Don't connect WebSocket for "all" containers
-      setConnectionStatus(prev => ({
-        ...prev,
-        isConnected: false,
-        connectionError: 'No active connection (all containers view)'
-      }));
-      return;
-    }
-
-    // Use WebSocket URL from environment variables
-    const wsBaseUrl = process.env.REACT_APP_WS_URL || 'ws://localhost:8093';
-    // Construct the full WebSocket URL with the correct path
-    const wsUrl = `${wsBaseUrl}/api/v1/logs/ws/logs/${containerId}`;
-    
-    console.log('Connecting WebSocket to:', wsUrl);
-    
-    try {
-      wsRef.current = new WebSocket(wsUrl);
-      
-      // Add connection timeout
-      const connectionTimeout = setTimeout(() => {
-        if (wsRef.current && wsRef.current.readyState !== WebSocket.OPEN) {
-          console.log('WebSocket connection timeout');
-          wsRef.current.close();
-          throw new Error('Connection timeout');
-        }
-      }, 5000);
-
-      wsRef.current.onopen = () => {
-        clearTimeout(connectionTimeout);
-        console.log(`WebSocket connected for container: ${containerId}`);
-        setConnectionStatus({
-          isConnected: true,
-          lastMessageTime: Date.now(),
-          connectionError: null
-        });
-        setReconnectAttempts(0);
-        lastMessageTimeRef.current = Date.now();
-        
-        // Send initial heartbeat
-        wsRef.current?.send(JSON.stringify({ type: 'heartbeat' }));
-      };
-
-      wsRef.current.onmessage = (event: MessageEvent) => {
-        try {
-          const data = JSON.parse(event.data);
-          const currentTime = Date.now();
-          lastMessageTimeRef.current = currentTime;
-          
-          setConnectionStatus(prev => ({
-            ...prev,
-            lastMessageTime: currentTime
-          }));
-          
-          // Handle connection established message
-          if (data.type === 'connection_established') {
-            console.log('WebSocket connection established:', data.message);
-            return;
-          }
-          
-          // Handle heartbeat acknowledgment
-          if (data.type === 'heartbeat_ack') {
-            console.debug('Received heartbeat ack');
-            return;
-          }
-          
-          // Handle log entries
-          setLogs(prevLogs => {
-            const newLogs = [...prevLogs, data];
-            // Keep only the last 1000 logs to prevent memory issues
-            return newLogs.slice(-1000);
-          });
-        } catch (error) {
-          console.error('Error processing WebSocket message:', error);
-        }
-      };
-
-      wsRef.current.onclose = (event: CloseEvent) => {
-        clearTimeout(connectionTimeout);
-        console.log(`WebSocket disconnected for container: ${containerId}`, event);
-        
-        const errorMessage = event.reason || `Connection closed with code ${event.code}${event.wasClean ? ' (clean)' : ''}`;
-        
-        setConnectionStatus({
-          isConnected: false,
-          lastMessageTime: lastMessageTimeRef.current,
-          connectionError: errorMessage
-        });
-        
-        // Don't try to reconnect if this was a normal closure
-        if (event.code === 1000) {
-          console.log('WebSocket closed normally');
-          return;
-        }
-        
-        // Attempt to reconnect with exponential backoff
-        if (reconnectAttempts < maxReconnectAttempts) {
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
-          const nextAttempt = reconnectAttempts + 1;
-          setReconnectAttempts(nextAttempt);
-          
-          console.log(`Attempting to reconnect (${nextAttempt}/${maxReconnectAttempts}) in ${delay}ms`);
-          
-          setTimeout(() => {
-            if (wsRef.current?.readyState !== WebSocket.OPEN) {
-              connectWebSocket(containerId);
-            }
-          }, delay);
-        } else {
-          console.error('Max reconnection attempts reached');
-          setConnectionStatus(prev => ({
-            ...prev,
-            connectionError: 'Connection failed after multiple attempts'
-          }));
-        }
-      };
-
-      wsRef.current.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        setConnectionStatus(prev => ({
-          ...prev,
-          isConnected: false,
-          connectionError: 'WebSocket error occurred'
-        }));
-      };
-    } catch (error) {
-      console.error('Error creating WebSocket:', error);
-      setConnectionStatus(prev => ({
-        ...prev,
-        isConnected: false,
-        connectionError: 'Failed to create WebSocket connection'
-      }));
-    }
-  }, [reconnectAttempts, maxReconnectAttempts]);
-
-  // WebSocket connection effect
-  useEffect(() => {
-    if (selectedContainer) {
-      console.log('Selected container changed:', selectedContainer);
-      connectWebSocket(selectedContainer);
-    }
-    
-    return () => {
-      console.log('Cleaning up WebSocket connection');
-      if (wsRef.current) {
-        wsRef.current.onclose = null; // Prevent reconnection on unmount
-        if (wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.close(1000, 'Component unmounting');
-        }
-        wsRef.current = null;
-        setConnectionStatus(prev => ({
-          ...prev,
-          isConnected: false
-        }));
-      }
-    };
-  }, [selectedContainer, connectWebSocket]);
 
   const loadContainers = useCallback(async () => {
     try {
@@ -224,34 +46,9 @@ const App: FC = () => {
     return () => clearInterval(interval);
   }, [loadContainers]);
 
-  useEffect(() => {
-    if (selectedContainer === 'all') {
-      setLogs([]);
-      setIsLoading(false);
-      return;
-    }
-
-    const loadInitialLogs = async () => {
-      try {
-        setIsLoading(true);
-        setError(null);
-        const initialLogs = await getLogs(selectedContainer, 100);
-        setLogs(initialLogs || []);
-      } catch (err) {
-        console.error('Error loading initial logs:', err);
-        setError('Failed to load logs for container');
-        setLogs([]); // Clear logs on error
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadInitialLogs();
-  }, [selectedContainer]);
 
   const handleContainerSelect = useCallback((containerId: string): void => {
     setSelectedContainer(containerId);
-    setLogs([]); // Clear logs when switching containers
   }, []);
 
   const handleRefresh = useCallback(() => {
@@ -294,9 +91,9 @@ const App: FC = () => {
             </div>
             <div className="col-md-6 text-end">
               <ConnectionStatus 
-                isConnected={connectionStatus.isConnected} 
-                lastMessageTime={connectionStatus.lastMessageTime || undefined}
-                connectionError={connectionStatus.connectionError || undefined}
+                isConnected={isConnected} 
+                lastMessageTime={Date.now()}
+                connectionError={isConnecting ? 'Connecting...' : undefined}
               />
               <button 
                 className="btn btn-outline-primary btn-sm ms-2"
@@ -361,8 +158,8 @@ const App: FC = () => {
                     <LogViewer 
                       logs={filteredLogs}
                       selectedContainer={selectedContainer}
-                      isLoading={isLoading}
-                      isConnected={connectionStatus.isConnected}
+                      isLoading={isLoading || isConnecting}
+                      isConnected={isConnected}
                     />
                   </div>
                 )}
@@ -372,6 +169,22 @@ const App: FC = () => {
         </div>
       </div>
     </div>
+  );
+};
+
+// App wrapper with providers
+const App: FC = () => {
+  const handleLogMessage = useCallback((log: LogEntry, containerId: string) => {
+    // Log message handling is now done in the WebSocket context
+    console.log('Received log message:', log, 'for container:', containerId);
+  }, []);
+
+  return (
+    <WebSocketProvider onMessage={handleLogMessage}>
+      <ContainerStatsProvider>
+        <AppContent />
+      </ContainerStatsProvider>
+    </WebSocketProvider>
   );
 };
 

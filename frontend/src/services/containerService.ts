@@ -33,6 +33,6 @@ export const restartContainer = async (id: string): Promise<void> => {
 };
 
 export const getContainerStats = async (id: string): Promise<any> => {
-  const response = await axios.get(`${API_BASE_URL}/containers/${id}/stats`);
+  const response = await axios.get(`${API_BASE_URL}/logs/containers/${id}/stats`);
   return response.data;
 };

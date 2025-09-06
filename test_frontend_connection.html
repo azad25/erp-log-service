@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Test</title>
+</head>
+<body>
+    <h1>WebSocket Connection Test</h1>
+    <div id="status">Connecting...</div>
+    <div id="logs"></div>
+    <div id="stats"></div>
+
+    <script>
+        const statusDiv = document.getElementById('status');
+        const logsDiv = document.getElementById('logs');
+        const statsDiv = document.getElementById('stats');
+
+        function log(message) {
+            console.log(message);
+            logsDiv.innerHTML += '<div>' + new Date().toISOString() + ': ' + message + '</div>';
+        }
+
+        function updateStatus(message) {
+            statusDiv.textContent = message;
+            log('Status: ' + message);
+        }
+
+        // Test logs WebSocket
+        const logsWs = new WebSocket('ws://localhost:8093/ws/logs/d2b40bd7e989');
+        
+        logsWs.onopen = function() {
+            updateStatus('Logs WebSocket Connected');
+            log('Logs WebSocket opened');
+        };
+
+        logsWs.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            log('Logs received: ' + JSON.stringify(data));
+        };
+
+        logsWs.onclose = function(event) {
+            updateStatus('Logs WebSocket Disconnected: ' + event.code);
+            log('Logs WebSocket closed: ' + event.code + ' ' + event.reason);
+        };
+
+        logsWs.onerror = function(error) {
+            updateStatus('Logs WebSocket Error');
+            log('Logs WebSocket error: ' + error);
+        };
+
+        // Test stats WebSocket
+        const statsWs = new WebSocket('ws://localhost:8093/ws/stats/d2b40bd7e989');
+        
+        statsWs.onopen = function() {
+            updateStatus('Stats WebSocket Connected');
+            log('Stats WebSocket opened');
+        };
+
+        statsWs.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            log('Stats received: ' + JSON.stringify(data));
+            if (data.type === 'stats') {
+                statsDiv.innerHTML = '<h3>Container Stats:</h3>' +
+                    '<div>CPU: ' + data.payload.cpuUsage + '%</div>' +
+                    '<div>Memory: ' + data.payload.memoryUsage + 'MB / ' + data.payload.memoryLimit + 'MB</div>' +
+                    '<div>Network RX: ' + data.payload.networkRx + 'MB</div>' +
+                    '<div>Network TX: ' + data.payload.networkTx + 'MB</div>';
+            }
+        };
+
+        statsWs.onclose = function(event) {
+            updateStatus('Stats WebSocket Disconnected: ' + event.code);
+            log('Stats WebSocket closed: ' + event.code + ' ' + event.reason);
+        };
+
+        statsWs.onerror = function(error) {
+            updateStatus('Stats WebSocket Error');
+            log('Stats WebSocket error: ' + error);
+        };
+
+        // Send ping every 30 seconds
+        setInterval(() => {
+            if (logsWs.readyState === WebSocket.OPEN) {
+                logsWs.send(JSON.stringify({type: 'ping'}));
+            }
+            if (statsWs.readyState === WebSocket.OPEN) {
+                statsWs.send(JSON.stringify({type: 'ping'}));
+            }
+        }, 30000);
+    </script>
+</body>
+</html>

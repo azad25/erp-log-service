@@ -1,30 +1,31 @@
 import asyncio
 import json
 import logging
+import re
 from typing import Dict, Optional
 from fastapi import WebSocket, WebSocketDisconnect, APIRouter
-import docker
-from datetime import datetime, timedelta
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 class StatsStreamer:
-    """Stream container statistics via WebSocket with enhanced metrics calculation"""
+    """Stream container statistics via WebSocket using Docker CLI"""
     
     def __init__(self):
-        self.client = None
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self._docker_cli_available = None
-        self._docker_cli_check_time = None
         
-    def _get_docker_client(self):
-        """Check Docker CLI availability (SDK client disabled due to URL scheme issues)"""
+    async def _check_docker_cli(self) -> bool:
+        """Check Docker CLI availability"""
         if self._docker_cli_available is None:
             try:
-                import subprocess
-                result = subprocess.run(['docker', 'version'], 
-                                     capture_output=True, text=True, timeout=5)
-                self._docker_cli_available = result.returncode == 0
+                proc = await asyncio.create_subprocess_exec(
+                    'docker', 'version',
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await proc.communicate()
+                self._docker_cli_available = proc.returncode == 0
                 if self._docker_cli_available:
                     logger.info("Docker CLI is available")
                 else:
@@ -32,135 +33,157 @@ class StatsStreamer:
             except Exception as e:
                 logger.error(f"Failed to check Docker CLI: {e}")
                 self._docker_cli_available = False
-        return 'cli' if self._docker_cli_available else None
+        return self._docker_cli_available
         
-    def _calculate_metrics(self, stats: dict) -> dict:
-        """Calculate container metrics from Docker stats"""
+    def _parse_memory_value(self, value_str: str) -> float:
+        """Parse memory value string to MB (e.g., '123.4MiB' -> 123.4)"""
+        value_str = value_str.strip()
+        if not value_str or value_str == '0':
+            return 0.0
+        
+        # Extract numeric part and unit
+        match = re.match(r'([0-9.]+)([A-Za-z]*)', value_str)
+        if not match:
+            return 0.0
+        
+        numeric_part = float(match.group(1))
+        unit = match.group(2).upper()
+        
+        # Convert to MB
+        if unit in ['B', 'BYTES']:
+            return numeric_part / (1024 * 1024)
+        elif unit in ['K', 'KB', 'KIB']:
+            return numeric_part / 1024
+        elif unit in ['M', 'MB', 'MIB']:
+            return numeric_part
+        elif unit in ['G', 'GB', 'GIB']:
+            return numeric_part * 1024
+        elif unit in ['T', 'TB', 'TIB']:
+            return numeric_part * 1024 * 1024
+        else:
+            # Assume bytes if no unit
+            return numeric_part / (1024 * 1024)
+
+    async def _parse_docker_stats_cli(self, container_id: str) -> dict:
+        """Get container stats using Docker CLI and parse the output"""
         try:
-            # CPU Usage calculation
-            cpu_delta = stats['cpu_stats']['cpu_usage']['total_usage'] - \
-                       stats['precpu_stats']['cpu_usage']['total_usage']
-            system_cpu_delta = stats['cpu_stats']['system_cpu_usage'] - \
-                             stats['precpu_stats']['system_cpu_usage']
-            online_cpus = stats['cpu_stats'].get('online_cpus', 
-                len(stats['cpu_stats']['cpu_usage'].get('percpu_usage', [1])))
+            proc = await asyncio.create_subprocess_exec(
+                'docker', 'stats', '--no-stream', '--format', '{{json .}}', container_id,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
             
-            if system_cpu_delta > 0 and cpu_delta > 0:
-                # Calculate CPU usage percentage for all cores
-                cpu_usage = (cpu_delta / system_cpu_delta) * online_cpus * 100.0
-            else:
-                cpu_usage = 0.0
+            if proc.returncode != 0:
+                logger.error(f"Docker stats command failed: {stderr.decode()}")
+                return {
+                    "type": "error",
+                    "error": f"Docker stats failed: {stderr.decode()}",
+                    "timestamp": datetime.utcnow().isoformat()
+                }
             
-            # Memory Usage (in bytes)
-            memory_stats = stats.get('memory_stats', {})
-            memory_usage = memory_stats.get('usage', 0)
-            if 'stats' in memory_stats:
-                # Cache and buffer memory should not be counted as used memory
-                cache = memory_stats['stats'].get('cache', 0)
-                memory_usage = memory_usage - cache
-                
-            memory_limit = memory_stats.get('limit', 0)
+            raw_stats = json.loads(stdout.decode())
             
-            if memory_limit == 0:
-                memory_limit = 1  # Avoid division by zero
-                
-            # Convert to megabytes for better readability
-            memory_usage = memory_usage / (1024 * 1024)  # Convert to MB
-            memory_limit = memory_limit / (1024 * 1024)  # Convert to MB
+            # Parse CLI format to structured format
+            cpu_percent = float(raw_stats.get('CPUPerc', '0.00%').replace('%', ''))
+            memory_usage_str = raw_stats.get('MemUsage', '0B / 0B')
+            memory_percent = float(raw_stats.get('MemPerc', '0.00%').replace('%', ''))
             
-            # Network stats (convert to MB)
-            networks = stats.get('networks', {})
-            rx_bytes = sum(net.get('rx_bytes', 0) for net in networks.values()) / (1024 * 1024)
-            tx_bytes = sum(net.get('tx_bytes', 0) for net in networks.values()) / (1024 * 1024)
+            # Parse memory usage (e.g., "123.4MiB / 1.5GiB")
+            memory_parts = memory_usage_str.split(' / ')
+            memory_usage_mb = 0
+            memory_limit_mb = 1
             
-            # Block I/O stats (convert to MB)
-            block_stats = stats.get('blkio_stats', {})
-            block_read = 0
-            block_write = 0
+            if len(memory_parts) == 2:
+                try:
+                    # Convert memory values to MB
+                    usage_str = memory_parts[0].strip()
+                    limit_str = memory_parts[1].strip()
+                    
+                    memory_usage_mb = self._parse_memory_value(usage_str)
+                    memory_limit_mb = self._parse_memory_value(limit_str)
+                except Exception as e:
+                    logger.warning(f"Error parsing memory values: {e}")
             
-            # Calculate block I/O in MB
-            for stat in block_stats.get('io_service_bytes_recursive', []):
-                if stat['op'] == 'Read':
-                    block_read += stat['value']
-                elif stat['op'] == 'Write':
-                    block_write += stat['value']
+            # Parse network I/O (e.g., "1.2MB / 3.4MB")
+            network_io = raw_stats.get('NetIO', '0B / 0B')
+            network_parts = network_io.split(' / ')
+            network_rx_mb = 0
+            network_tx_mb = 0
             
-            block_read = block_read / (1024 * 1024)
-            block_write = block_write / (1024 * 1024)
+            if len(network_parts) == 2:
+                try:
+                    network_rx_mb = self._parse_memory_value(network_parts[0].strip())
+                    network_tx_mb = self._parse_memory_value(network_parts[1].strip())
+                except Exception as e:
+                    logger.warning(f"Error parsing network values: {e}")
             
-            # Format values for better precision and readability
+            # Parse block I/O (e.g., "5.6MB / 7.8MB")
+            block_io = raw_stats.get('BlockIO', '0B / 0B')
+            block_parts = block_io.split(' / ')
+            block_read_mb = 0
+            block_write_mb = 0
+            
+            if len(block_parts) == 2:
+                try:
+                    block_read_mb = self._parse_memory_value(block_parts[0].strip())
+                    block_write_mb = self._parse_memory_value(block_parts[1].strip())
+                except Exception as e:
+                    logger.warning(f"Error parsing block I/O values: {e}")
+            
+            pids = int(raw_stats.get('PIDs', '0'))
+            
             stats_payload = {
                 "type": "stats",
                 "payload": {
-                    "cpuUsage": round(cpu_usage, 2),
-                    "cpuCount": online_cpus,
-                    "memoryUsage": round(memory_usage, 2),  # In MB
-                    "memoryLimit": round(memory_limit, 2),  # In MB
-                    "memoryPercent": round((memory_usage / memory_limit * 100) if memory_limit > 0 else 0, 2),
-                    "networkRx": round(rx_bytes, 2),  # In MB
-                    "networkTx": round(tx_bytes, 2),  # In MB
-                    "blockRead": round(block_read, 2),  # In MB
-                    "blockWrite": round(block_write, 2),  # In MB
-                    "pids": stats.get('pids_stats', {}).get('current', 0),
+                    "cpuUsage": round(cpu_percent, 2),
+                    "cpuCount": 1,  # CLI doesn't provide CPU count easily
+                    "memoryUsage": round(memory_usage_mb, 2),
+                    "memoryLimit": round(memory_limit_mb, 2),
+                    "memoryPercent": round(memory_percent, 2),
+                    "networkRx": round(network_rx_mb, 2),
+                    "networkTx": round(network_tx_mb, 2),
+                    "blockRead": round(block_read_mb, 2),
+                    "blockWrite": round(block_write_mb, 2),
+                    "pids": pids,
                     "status": "running"
                 },
                 "timestamp": datetime.utcnow().isoformat()
             }
-
-            logger.debug(f"Container stats: CPU: {stats_payload['payload']['cpuUsage']}%, " + \
-                      f"Memory: {stats_payload['payload']['memoryUsage']}MB/{stats_payload['payload']['memoryLimit']}MB " + \
-                      f"({stats_payload['payload']['memoryPercent']}%)")
             
+            logger.debug(f"Container {container_id} stats: CPU: {cpu_percent}%, Memory: {memory_usage_mb:.1f}MB/{memory_limit_mb:.1f}MB")
             return stats_payload
             
         except Exception as e:
-            logger.error(f"Error calculating metrics: {e}")
+            logger.error(f"Error getting container stats: {e}")
             return {
                 "type": "error",
-                "error": f"Error calculating metrics: {str(e)}",
+                "error": f"Error getting stats: {str(e)}",
                 "timestamp": datetime.utcnow().isoformat()
             }
     
     async def stream_container_stats(self, websocket: WebSocket, container_id: str):
-        """Stream container stats to WebSocket"""
-        client = self._get_docker_client()
-        if not client:
+        """Stream container stats to WebSocket using Docker CLI"""
+        if not await self._check_docker_cli():
             await websocket.send_json({
                 "type": "error",
-                "error": "Docker daemon not available",
+                "error": "Docker CLI not available",
                 "timestamp": datetime.utcnow().isoformat()
             })
             return
             
         try:
-            container = client.containers.get(container_id)
-            last_cpu_stats = None
-            last_system_cpu_usage = None
-            
             # Send initial stats
-            initial_stats = container.stats(stream=False, decode=True)
-            await websocket.send_json(self._calculate_metrics(initial_stats))
+            initial_stats = await self._parse_docker_stats_cli(container_id)
+            await websocket.send_json(initial_stats)
             
             # Start streaming stats
             async def stream_stats():
-                nonlocal last_cpu_stats, last_system_cpu_usage
-                
-                for stats in container.stats(stream=True, decode=True):
+                while True:
                     try:
-                        # Update CPU usage history
-                        if last_cpu_stats is None:
-                            last_cpu_stats = stats['precpu_stats']
-                            last_system_cpu_usage = stats['precpu_stats'].get('system_cpu_usage', 0)
-                        
-                        # Calculate metrics
-                        metrics = self._calculate_metrics(stats)
-                        await websocket.send_json(metrics)
-                        
-                        # Update last stats
-                        last_cpu_stats = stats['cpu_stats']
-                        last_system_cpu_usage = stats['cpu_stats'].get('system_cpu_usage', 0)
-                        
-                        await asyncio.sleep(1)  # Update every second
+                        stats = await self._parse_docker_stats_cli(container_id)
+                        await websocket.send_json(stats)
+                        await asyncio.sleep(2)  # Update every 2 seconds
                     except Exception as e:
                         logger.error(f"Error sending stats or connection lost: {e}")
                         break
@@ -174,12 +197,6 @@ class StatsStreamer:
             except asyncio.CancelledError:
                 logger.info(f"Stats streaming cancelled for container {container_id}")
                 
-        except docker.errors.NotFound:
-            await websocket.send_json({
-                "type": "error",
-                "error": f"Container {container_id} not found",
-                "timestamp": datetime.utcnow().isoformat()
-            })
         except Exception as e:
             logger.error(f"Error streaming stats for {container_id}: {e}")
             await websocket.send_json({
@@ -200,190 +217,4 @@ stats_streamer = StatsStreamer()
 @router.websocket("/ws/stats/{container_id}")
 async def websocket_stats_endpoint(websocket: WebSocket, container_id: str):
     """WebSocket endpoint for container stats"""
-    await websocket.accept()
     await stats_streamer.stream_container_stats(websocket, container_id)
-
-class StatsStreamer:
-    """Stream container statistics via WebSocket with enhanced metrics calculation"""
-    
-    def __init__(self):
-        self.client = None
-        self.active_tasks: Dict[str, asyncio.Task] = {}
-        self._docker_cli_available = None
-        self._docker_cli_check_time = None
-        
-    def _get_docker_client(self):
-        """Check Docker CLI availability (SDK client disabled due to URL scheme issues)"""
-        if self._docker_cli_available is None:
-            try:
-                import subprocess
-                result = subprocess.run(['docker', 'version'], 
-                                     capture_output=True, text=True, timeout=5)
-                self._docker_cli_available = result.returncode == 0
-                if self._docker_cli_available:
-                    logger.info("Docker CLI is available")
-                else:
-                    logger.warning("Docker CLI is not available")
-            except Exception as e:
-                logger.error(f"Failed to check Docker CLI: {e}")
-                self._docker_cli_available = False
-        return 'cli' if self._docker_cli_available else None
-        
-    def _calculate_metrics(self, stats: dict) -> dict:
-        """Calculate container metrics from Docker stats"""
-        try:
-            # CPU Usage calculation
-            cpu_delta = stats['cpu_stats']['cpu_usage']['total_usage'] - \
-                       stats['precpu_stats']['cpu_usage']['total_usage']
-            system_cpu_delta = stats['cpu_stats']['system_cpu_usage'] - \
-                             stats['precpu_stats']['system_cpu_usage']
-            online_cpus = stats['cpu_stats'].get('online_cpus', 
-                len(stats['cpu_stats']['cpu_usage'].get('percpu_usage', [1])))
-            
-            if system_cpu_delta > 0 and cpu_delta > 0:
-                # Calculate CPU usage percentage for all cores
-                cpu_usage = (cpu_delta / system_cpu_delta) * online_cpus * 100.0
-            else:
-                cpu_usage = 0.0
-            
-            # Memory Usage (in bytes)
-            memory_stats = stats.get('memory_stats', {})
-            memory_usage = memory_stats.get('usage', 0)
-            if 'stats' in memory_stats:
-                # Cache and buffer memory should not be counted as used memory
-                cache = memory_stats['stats'].get('cache', 0)
-                memory_usage = memory_usage - cache
-                
-            memory_limit = memory_stats.get('limit', 0)
-            
-            if memory_limit == 0:
-                memory_limit = 1  # Avoid division by zero
-                
-            # Convert to megabytes for better readability
-            memory_usage = memory_usage / (1024 * 1024)  # Convert to MB
-            memory_limit = memory_limit / (1024 * 1024)  # Convert to MB
-            
-            # Network stats (convert to MB)
-            networks = stats.get('networks', {})
-            rx_bytes = sum(net.get('rx_bytes', 0) for net in networks.values()) / (1024 * 1024)
-            tx_bytes = sum(net.get('tx_bytes', 0) for net in networks.values()) / (1024 * 1024)
-            
-            # Block I/O stats (convert to MB)
-            block_stats = stats.get('blkio_stats', {})
-            block_read = 0
-            block_write = 0
-            
-            # Calculate block I/O in MB
-            for stat in block_stats.get('io_service_bytes_recursive', []):
-                if stat['op'] == 'Read':
-                    block_read += stat['value']
-                elif stat['op'] == 'Write':
-                    block_write += stat['value']
-            
-            block_read = block_read / (1024 * 1024)
-            block_write = block_write / (1024 * 1024)
-            
-            # Format values for better precision and readability
-            stats_payload = {
-                "type": "stats",
-                "payload": {
-                    "cpuUsage": round(cpu_usage, 2),
-                    "cpuCount": online_cpus,
-                    "memoryUsage": round(memory_usage, 2),  # In MB
-                    "memoryLimit": round(memory_limit, 2),  # In MB
-                    "memoryPercent": round((memory_usage / memory_limit * 100) if memory_limit > 0 else 0, 2),
-                    "networkRx": round(rx_bytes, 2),  # In MB
-                    "networkTx": round(tx_bytes, 2),  # In MB
-                    "blockRead": round(block_read, 2),  # In MB
-                    "blockWrite": round(block_write, 2),  # In MB
-                    "pids": stats.get('pids_stats', {}).get('current', 0),
-                    "status": "running"
-                },
-                "timestamp": datetime.utcnow().isoformat()
-            }
-
-            logger.debug(f"Container stats: CPU: {stats_payload['payload']['cpuUsage']}%, " + \
-                      f"Memory: {stats_payload['payload']['memoryUsage']}MB/{stats_payload['payload']['memoryLimit']}MB " + \
-                      f"({stats_payload['payload']['memoryPercent']}%)")
-            
-            return stats_payload
-            
-        except Exception as e:
-            logger.error(f"Error calculating metrics: {e}")
-            return {
-                "type": "error",
-                "error": f"Error calculating metrics: {str(e)}",
-                "timestamp": datetime.utcnow().isoformat()
-            }
-    
-    async def stream_container_stats(self, websocket: WebSocket, container_id: str):
-        """Stream container stats to WebSocket"""
-        client = self._get_docker_client()
-        if not client:
-            await websocket.send_json({
-                "type": "error",
-                "error": "Docker daemon not available",
-                "timestamp": datetime.utcnow().isoformat()
-            })
-            return
-            
-        try:
-            container = client.containers.get(container_id)
-            last_cpu_stats = None
-            last_system_cpu_usage = None
-            
-            # Send initial stats
-            initial_stats = container.stats(stream=False, decode=True)
-            await websocket.send_json(self._calculate_metrics(initial_stats))
-            
-            # Start streaming stats
-            async def stream_stats():
-                nonlocal last_cpu_stats, last_system_cpu_usage
-                
-                for stats in container.stats(stream=True, decode=True):
-                    try:
-                        # Update CPU usage history
-                        if last_cpu_stats is None:
-                            last_cpu_stats = stats['precpu_stats']
-                            last_system_cpu_usage = stats['precpu_stats'].get('system_cpu_usage', 0)
-                        
-                        # Calculate metrics
-                        metrics = self._calculate_metrics(stats)
-                        await websocket.send_json(metrics)
-                        
-                        # Update last stats
-                        last_cpu_stats = stats['cpu_stats']
-                        last_system_cpu_usage = stats['cpu_stats'].get('system_cpu_usage', 0)
-                        
-                        await asyncio.sleep(1)  # Update every second
-                    except Exception as e:
-                        logger.error(f"Error sending stats or connection lost: {e}")
-                        break
-            
-            # Create and store the streaming task
-            task = asyncio.create_task(stream_stats())
-            self.active_tasks[container_id] = task
-            
-            try:
-                await task
-            except asyncio.CancelledError:
-                logger.info(f"Stats streaming cancelled for container {container_id}")
-                
-        except docker.errors.NotFound:
-            await websocket.send_json({
-                "type": "error",
-                "error": f"Container {container_id} not found",
-                "timestamp": datetime.utcnow().isoformat()
-            })
-        except Exception as e:
-            logger.error(f"Error streaming stats for {container_id}: {e}")
-            await websocket.send_json({
-                "type": "error",
-                "error": f"Error streaming stats: {str(e)}",
-                "timestamp": datetime.utcnow().isoformat()
-            })
-        finally:
-            if container_id in self.active_tasks:
-                del self.active_tasks[container_id]
-
-# Note: We've removed the redundant websocket_stats function since websocket_stats_endpoint provides the same functionality

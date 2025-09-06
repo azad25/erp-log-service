@@ -106,7 +106,8 @@ export const ContainerStatsProvider: React.FC<ContainerStatsProviderProps> = ({ 
 
     try {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/api/v1/stats/containers/${containerId}/ws`;
+      // Use direct connection to backend for WebSocket connections
+      let wsUrl = `${protocol}//${window.location.hostname}:8093/ws/stats/${containerId}`;
       
       const newWs = new WebSocket(wsUrl);
       connectionsRef.current[containerId] = newWs;
@@ -130,19 +131,55 @@ export const ContainerStatsProvider: React.FC<ContainerStatsProviderProps> = ({ 
         
         try {
           const data = JSON.parse(event.data);
+          
+          // Handle connection establishment
+          if (data.type === 'connection_established') {
+            safeConsole.log(`Stats connection established for ${containerId}`);
+            return;
+          }
+          
+          if (data.type === 'ping') {
+            // Respond to ping with pong
+            newWs.send(JSON.stringify({ type: 'pong' }));
+            return;
+          }
+          
+          if (data.type === 'pong') {
+            // Clear any pong timeout if needed
+            return;
+          }
           if (data.type === 'stats' && data.payload) {
-            // Use functional update to prevent stale closures
-            setStats(prev => ({
-              ...prev,
-              [containerId]: {
-                ...data.payload,
+            if (mountedRef.current) {
+              const statsData: ContainerStats = {
                 id: containerId,
+                containerId: containerId,
+                cpuUsage: Number(data.payload.cpuUsage) || 0,
+                cpuCount: Number(data.payload.cpuCount) || 1,
+                memoryUsage: Number(data.payload.memoryUsage) || 0,
+                memoryLimit: Number(data.payload.memoryLimit) || 1024,
+                networkRx: Number(data.payload.networkRx) || 0,
+                networkTx: Number(data.payload.networkTx) || 0,
+                blockRead: Number(data.payload.blockRead) || 0,
+                blockWrite: Number(data.payload.blockWrite) || 0,
+                pids: Number(data.payload.pids) || 0,
                 timestamp: new Date().toISOString()
-              }
-            }));
+              };
+              
+              console.log('WebSocket received stats:', data);
+              console.log('Updating stats for container:', containerId, statsData);
+              
+              setStats(prev => ({
+                ...prev,
+                [containerId]: statsData
+              }));
+            }
+          } else if (data.type === 'connection_established') {
+            console.log('Stats WebSocket connection established for:', containerId);
+          } else if (data.type === 'error') {
+            safeConsole.error(`Stats WebSocket error for ${containerId}:`, data.message);
           }
         } catch (error) {
-          safeConsole.error('Error parsing stats message:', error);
+          safeConsole.error('Error parsing WebSocket message:', error);
         }
       };
 

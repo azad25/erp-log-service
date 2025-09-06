@@ -146,9 +146,108 @@ class LogProcessor:
                     }
             return None
             
+        def detect_system_log(log_line: str) -> Optional[Dict[str, Any]]:
+            """Detect system logs (syslog format)."""
+            match = re.match(r'^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+):\s*(.*)', log_line)
+            if match:
+                timestamp, hostname, process, message = match.groups()
+                return {
+                    'type': 'system',
+                    'hostname': hostname,
+                    'process': process,
+                    'message': message,
+                    'timestamp': timestamp
+                }
+            return None
+            
+        def detect_application_log(log_line: str) -> Optional[Dict[str, Any]]:
+            """Detect application logs with common patterns."""
+            patterns = [
+                r'^\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\]\s+(\w+):\s*(.*)',  # [timestamp] LEVEL: message
+                r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\s+(\w+)\s+(.*)',  # ISO timestamp LEVEL message
+                r'^(\w+):\s*(.*)$'  # LEVEL: message
+            ]
+            
+            for pattern in patterns:
+                match = re.match(pattern, log_line)
+                if match:
+                    groups = match.groups()
+                    if len(groups) >= 2:
+                        return {
+                            'type': 'application',
+                            'level': groups[-2] if len(groups) > 2 else groups[0],
+                            'message': groups[-1],
+                            'timestamp': groups[0] if len(groups) > 2 else None
+                        }
+            return None
+            
+        def detect_command_output(log_line: str) -> Optional[Dict[str, Any]]:
+            """Detect command/terminal output."""
+            if re.match(r'^[\w@\-]+[$#]\s+', log_line):
+                return {
+                    'type': 'command',
+                    'subtype': 'prompt',
+                    'message': log_line
+                }
+            elif re.match(r'^\s*\$\s+', log_line):
+                return {
+                    'type': 'command',
+                    'subtype': 'shell',
+                    'message': log_line
+                }
+            return None
+            
+        def detect_web_server_log(log_line: str) -> Optional[Dict[str, Any]]:
+            """Detect web server logs (Apache/Nginx format)."""
+            match = re.match(r'^(\S+)\s+-\s+-\s+\[([^\]]+)\]\s+"([^"]+)"\s+(\d+)\s+(\S+)', log_line)
+            if match:
+                ip, timestamp, request, status, size = match.groups()
+                return {
+                    'type': 'web_server',
+                    'client_ip': ip,
+                    'request': request,
+                    'status': status,
+                    'size': size,
+                    'timestamp': timestamp,
+                    'message': log_line
+                }
+            return None
+            
+        def detect_database_log(log_line: str) -> Optional[Dict[str, Any]]:
+            """Detect database logs (PostgreSQL, MySQL, etc.)."""
+            pg_match = re.match(r'^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\w+)\s+\[(\d+)\]\s+(\w+):\s*(.*)', log_line)
+            if pg_match:
+                timestamp, pid, level, message = pg_match.groups()
+                return {
+                    'type': 'database',
+                    'subtype': 'postgresql',
+                    'pid': pid,
+                    'level': level,
+                    'message': message,
+                    'timestamp': timestamp
+                }
+            
+            mysql_match = re.match(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)\s+(\d+)\s+\[(\w+)\]\s*(.*)', log_line)
+            if mysql_match:
+                timestamp, thread_id, level, message = mysql_match.groups()
+                return {
+                    'type': 'database',
+                    'subtype': 'mysql',
+                    'thread_id': thread_id,
+                    'level': level,
+                    'message': message,
+                    'timestamp': timestamp
+                }
+            return None
+
         return {
             'docker': detect_docker_container,
-            'kubernetes': detect_k8s_container
+            'kubernetes': detect_k8s_container,
+            'system': detect_system_log,
+            'application': detect_application_log,
+            'command': detect_command_output,
+            'web_server': detect_web_server_log,
+            'database': detect_database_log
         }
 
     async def get_containers(self) -> List[Dict[str, Any]]:

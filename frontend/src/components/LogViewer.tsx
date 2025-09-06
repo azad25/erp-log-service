@@ -159,47 +159,8 @@ const LogViewer: React.FC<LogViewerProps> = ({
 
   return (
     <div className="log-viewer-container d-flex flex-column h-100">
-      <div className="log-content flex-grow-1 overflow-auto" style={{ backgroundColor: '#ffffff', color: '#000000' }} ref={logContainerRef}>
-        {filteredLogs.length === 0 ? (
-          <div className="d-flex justify-content-center align-items-center h-100">
-            <div className="text-center">
-              <i className="bi bi-file-text display-4 text-muted mb-3"></i>
-              <p className="text-muted">
-                {filter || selectedLogLevel !== 'all' 
-                  ? 'No logs match the current filters.'
-                  : 'No logs available.'}
-              </p>
-            </div>
-          </div>
-        ) : (
-          <div className="p-2">
-            {filteredLogs.map((log, index) => (
-              <div 
-                key={`${log.timestamp}-${index}`} 
-                className="log-entry mb-1 font-monospace"
-                style={{ fontSize: '0.85rem', lineHeight: '1.3' }}
-              >
-                {showTimestamps && (
-                  <span className="fw-bold" style={{ color: '#ff0000' }}>
-                    {formatTimestamp(log.timestamp)}
-                  </span>
-                )}
-                <span className={`badge ${getLogLevelBadge(log.level || 'info')} me-3 mx-1`}>
-                  {formatLogLevel(log.level || 'info')}
-                </span>
-                {log.container_name && (
-                  <span className="badge bg-info text-dark me-2">
-                    {log.container_name}
-                  </span>
-                )}
-                <span className="log-message">{log.message}</span>
-              </div>
-            ))}
-            <div ref={endOfLogsRef} />
-          </div>
-        )}
-      </div>
-      <div className="log-viewer-header bg-secondary p-3 border-top border-dark">
+      {/* Log Viewer Header with Controls */}
+      <div className="log-viewer-header bg-secondary p-3 border-bottom border-dark flex-shrink-0">
         <div className="d-flex justify-content-between align-items-center mb-2">
           <h6 className="mb-0 text-light">
             <i className="bi bi-file-text me-2"></i>
@@ -217,7 +178,7 @@ const LogViewer: React.FC<LogViewerProps> = ({
                 Disconnected
               </span>
             )}
-            <span className="badge bg-success">
+            <span className="badge bg-info">
               {filteredLogs.length} entries
             </span>
           </div>
@@ -290,6 +251,7 @@ const LogViewer: React.FC<LogViewerProps> = ({
           fontFamily: 'Monaco, Consolas, "Courier New", monospace',
           fontSize: '0.85rem'
         }}
+        ref={logContainerRef}
       >
         {filteredLogs.length === 0 ? (
           <div className="d-flex justify-content-center align-items-center h-100">
@@ -318,7 +280,6 @@ const LogViewer: React.FC<LogViewerProps> = ({
                       : 'bg-success bg-opacity-10 border-success'
                   }`}
                   style={{
-                    animation: `slideInRight 0.3s ease-out ${index * 0.05}s both`,
                     lineHeight: '1.4',
                     wordBreak: 'break-word'
                   }}

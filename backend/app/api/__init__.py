@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.endpoints import logs
+from app.api.endpoints import logs, stats
 
 # Create separate routers for HTTP and WebSocket
 api_router = APIRouter()
@@ -7,6 +7,9 @@ ws_router = APIRouter()
 
 # Include REST API routes with /logs prefix
 api_router.include_router(logs.router, prefix="/logs", tags=["logs"])
+
+# Include stats WebSocket routes
+api_router.include_router(stats.router, tags=["stats"])
 
 # Function to include both routers in the main app
 def include_routes(app):

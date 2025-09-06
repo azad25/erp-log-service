@@ -73,9 +73,43 @@ npm start
 - `GET /api/v1/containers` - List all containers
 - `GET /api/v1/containers/{container_id}/logs` - Get historical logs for a container
 
-### WebSocket
+### WebSocket Endpoints 
 
-- `ws://localhost:3004/api/v1/logs/ws/logs/{container_id}` - Real-time log stream for a container
+### Real-time Container Stats
+- **Endpoint**: `ws://localhost:8093/ws/stats/{container_id}`
+- **Purpose**: Stream real-time container statistics (CPU, memory, network, disk)
+- **Update Frequency**: Every 1 second
+- **Message Format**: 
+  ```json
+  {
+    "type": "stats",
+    "payload": {
+      "containerId": "abc123",
+      "cpuUsage": 8.33,
+      "memoryUsage": 254.3,
+      "memoryLimit": 512.0,
+      "networkRx": 0,
+      "networkTx": 0,
+      "pids": 60
+    }
+  }
+  ```
+
+### Real-time Container Logs
+- **Endpoint**: `ws://localhost:8093/ws/logs/{container_id}`
+- **Purpose**: Stream real-time log entries from Docker containers
+- **Message Format**: 
+  ```json
+  {
+    "type": "log",
+    "payload": {
+      "container_id": "abc123",
+      "timestamp": "2024-01-01T12:00:00Z",
+      "message": "Log message content",
+      "level": "INFO"
+    }
+  }
+  ```
 
 ## Environment Variables
 
