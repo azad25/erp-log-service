@@ -24,6 +24,262 @@ Real-time Docker container log monitoring service for the ERP Suite.
 - Node.js 16+ (for development)
 - Python 3.9+ (for backend development)
 
+# ERP Log Service Codebase Documentation
+
+This document provides an overview of the ERP Log Service codebase, its architecture, and guidance for developers to understand and extend the project.
+
+---
+
+## Project Structure
+
+```
+erp-log-service/
+├── backend/
+│   ├── main.py                # FastAPI app entry point with WebSocket endpoints
+│   ├── requirements.txt        # Python dependencies
+│   └── app/
+│       ├── api/
+│       │   ├── __init__.py
+│       │   └── endpoints/
+│       │       ├── logs.py    # API & WebSocket endpoints for logs
+│       │       └── stats.py   # WebSocket endpoints for container stats
+│       ├── core/
+│       │   ├── config.py      # App configuration (env, port, etc.)
+│       │   ├── dependencies.py # Dependency injection
+│       │   └── connection_manager.py # WebSocket connection management
+│       ├── services/
+│       │   ├── log_processor.py  # Log parsing/formatting logic
+│       │   ├── log_streamer.py   # WebSocket log streaming logic
+│       │   └── docker.py         # Docker service interactions
+│       └── __init__.py
+├── frontend/
+│   ├── package.json           # React dependencies
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── ContainerList.tsx # Container list UI
+│   │   │   ├── ContainerDetails.tsx # Container stats and details
+│   │   │   ├── LogsModal.tsx     # Modal for viewing logs
+│   │   │   └── ConnectionStatus.tsx # WebSocket connection status
+│   │   ├── contexts/
+│   │   │   └── ContainerStatsContext.tsx # Stats context provider
+│   │   ├── services/
+│   │   │   ├── api.ts         # API service
+│   │   │   ├── containerService.ts # Container management
+│   │   │   └── websocketService.ts # WebSocket service
+│   │   └── App.tsx            # Main React app
+│   └── public/                # Static assets
+├── docker-compose.yml         # Docker Compose for development
+├── Dockerfile.dev             # Development Dockerfile
+├── README.md                  # Project overview
+└── CODEBASE_DOCUMENTATION.md  # This document
+```
+
+---
+
+## Backend (Python/FastAPI)
+
+### Core Components
+- **main.py**: FastAPI application entry point with WebSocket endpoints for logs and stats.
+- **app/core/config.py**: Centralized configuration management using Pydantic settings.
+- **app/core/connection_manager.py**: Manages WebSocket connections and broadcasting.
+- **app/core/dependencies.py**: Dependency injection for services.
+
+### API Endpoints
+- **/api/v1/logs/containers**: List all containers
+- **/api/v1/logs/containers/{id}/logs**: Get container logs
+- **/ws/logs/{container_id}**: WebSocket for real-time logs
+- **/ws/stats/{container_id}**: WebSocket for container statistics
+- **/health**: Health check endpoint
+- **/debug/routes**: List all registered routes
+- **/debug/websockets**: Show active WebSocket connections
+
+### Services
+- **log_processor.py**: Processes and formats Docker logs
+- **log_streamer.py**: Manages log streaming to WebSocket clients
+- **docker.py**: Interacts with Docker daemon via CLI
+- **stats.py**: Handles container statistics collection and streaming
+
+### Key Features
+- Real-time log streaming via WebSocket
+- Container statistics (CPU, memory, network, disk)
+- Graceful shutdown handling
+- Connection health monitoring
+- Support for multiple concurrent WebSocket connections
+- Error handling and logging
+
+---
+
+## Frontend (React/TypeScript)
+
+### Core Components
+- **App.tsx**: Main application component with routing
+- **ContainerList.tsx**: Lists all Docker containers with status
+- **ContainerDetails.tsx**: Shows detailed container information and stats
+- **LogsModal.tsx**: Displays container logs in a modal
+- **ConnectionStatus.tsx**: Shows WebSocket connection status
+
+### Contexts
+- **ContainerStatsContext**: Manages container stats state
+- **WebSocketContext**: Handles WebSocket connections
+
+### Services
+- **api.ts**: REST API client
+- **containerService.ts**: Container management functions
+- **websocketService.ts**: WebSocket client for real-time updates
+
+### UI Features
+- Real-time container status updates
+- Interactive logs with auto-scroll
+- Container statistics visualization
+- Responsive design
+- Connection status indicators
+- Error handling and loading states
+
+---
+
+## Development & Extension
+
+### Backend Development
+1. **Add new endpoints**:
+   - Create new router in `app/api/endpoints/`
+   - Register in `app/api/__init__.py`
+
+2. **Extend services**:
+   - Add new methods to existing services
+   - Create new services in `app/services/`
+
+3. **Testing**:
+   - Unit tests: `pytest tests/unit`
+   - Integration tests: `pytest tests/integration`
+   - Run tests with coverage: `pytest --cov=app`
+
+### Frontend Development
+1. **Add new components**:
+   - Create React components in `src/components/`
+   - Add TypeScript types in `src/types/`
+
+2. **Extend API client**:
+   - Add new methods to `src/services/api.ts`
+   - Update WebSocket handlers in `src/services/websocketService.ts`
+
+3. **Run development server**:
+   ```bash
+   cd frontend
+   npm start
+   ```
+
+### Deployment
+1. **Build production image**:
+   ```bash
+   docker-compose -f docker-compose.prod.yml build
+   ```
+
+2. **Start services**:
+   ```bash
+   docker-compose -f docker-compose.prod.yml up -d
+   ```
+
+3. **View logs**:
+   ```bash
+   docker-compose -f docker-compose.prod.yml logs -f
+   ```
+
+---
+
+## API Reference
+
+### WebSocket Endpoints
+
+#### Logs WebSocket
+- **URL**: `ws://<host>:<port>/ws/logs/{container_id}`
+- **Parameters**:
+  - `container_id`: Container ID or 'all' for all containers
+- **Messages**:
+  - Incoming: Filter and subscription messages
+  - Outgoing: Log entries with metadata
+
+#### Stats WebSocket
+- **URL**: `ws://<host>:<port>/ws/stats/{container_id}`
+- **Parameters**:
+  - `container_id`: Container ID
+- **Messages**:
+  - Outgoing: Container statistics (CPU, memory, network, disk)
+
+### REST API
+
+#### List Containers
+```
+GET /api/v1/logs/containers
+```
+
+#### Get Container Logs
+```
+GET /api/v1/logs/containers/{id}/logs?tail=100&since=2023-01-01T00:00:00Z
+```
+
+#### Container Actions
+- Start: `POST /api/v1/logs/containers/{id}/start`
+- Stop: `POST /api/v1/logs/containers/{id}/stop`
+- Restart: `POST /api/v1/logs/containers/{id}/restart`
+
+---
+
+## Troubleshooting
+
+### Common Issues
+1. **WebSocket connection fails**:
+   - Check if backend service is running
+   - Verify CORS and proxy settings
+   - Check browser console for errors
+
+2. **No logs appearing**:
+   - Verify container is running
+   - Check Docker daemon logs
+   - Verify container has log output
+
+3. **High CPU/Memory usage**:
+   - Check for memory leaks in WebSocket handlers
+   - Monitor WebSocket connection count
+   - Review log processing logic
+
+### Debugging
+1. **Enable debug logging**:
+   ```bash
+   LOG_LEVEL=DEBUG uvicorn main:app --reload
+   ```
+
+2. **Inspect WebSocket traffic**:
+   - Use browser developer tools
+   - Check WebSocket frames in Network tab
+
+---
+
+## Running Locally
+
+1. **Backend**:
+   - Install Python dependencies: `pip install -r backend/requirements.txt`
+   - Start FastAPI: `uvicorn backend.main:app --reload --port 8092`
+2. **Frontend**:
+   - Install Node dependencies: `cd frontend && npm install`
+   - Start React app: `npm start`
+3. **Docker Compose**:
+   - Use `docker-compose.yml` for local dev environment.
+
+---
+
+## Useful Tips
+- All logs are streamed and buffered per container for efficient real-time updates.
+- Use the modal to view previous logs and color-coded log entries.
+- Extend log parsing logic in `log_processor.py` for new log formats.
+- Use type definitions in `src/types/` for consistent data handling.
+
+---
+
+## Contact & Contribution
+- For questions, see `README.md` or contact the maintainers.
+- Contributions welcome! Please follow the code structure and add documentation for new features.
+
+
 ## Quick Start
 
 ### Using Docker Compose
@@ -175,4 +431,4 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 ## License
 
-Proprietary - ERP Suite
+Built for UNIBASE ERP for infrastructure monitoring and logging.
