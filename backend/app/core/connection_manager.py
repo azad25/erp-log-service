@@ -94,24 +94,22 @@ class ConnectionManager:
         Accepts websocket and subscribes it to container_id.
         Returns current number of subscribers for that container after connect.
         """
-        # Accept the websocket first (idempotent in Starlette/FastAPI)
-        await websocket.accept()
+        # Check if websocket is already accepted
+        try:
+            if hasattr(websocket, 'client_state') and websocket.client_state.name != 'CONNECTED':
+                await websocket.accept()
+        except Exception as e:
+            logger.warning(f"WebSocket accept failed, but continuing: {e}")
+            # Continue anyway to prevent connection rejection
 
         async with self.lock:
             if container_id not in self.active_connections:
                 self.active_connections[container_id] = weakref.WeakSet()
 
-            # Enforce max connections per container
+            # Support unlimited concurrent connections for scalability
             current_count = len(self.active_connections[container_id])
-            if current_count >= self.max_connections_per_container:
-                # too many connections
-                logger.info("Refused connection: container %s has %d connections (limit %d)",
-                            container_id, current_count, self.max_connections_per_container)
-                try:
-                    await websocket.close(code=1008, reason="Too many connections for this container")
-                except Exception:
-                    pass
-                return current_count
+            logger.info(f"Accepting WebSocket connection for container {container_id}, current count: {current_count}")
+            # No connection limit - support parallel multiple connections
 
             # register websocket
             self.active_connections[container_id].add(websocket)

@@ -11,8 +11,8 @@ import React, {
 import { LogEntry } from '../types/logs';
 
 // Constants
-const PING_INTERVAL = 30000; // 30 seconds
-const PONG_TIMEOUT = 5000;   // 5 seconds
+const PING_INTERVAL = 0; // Disable frontend ping - backend handles it
+const PONG_TIMEOUT = 0;   // Disable pong timeout
 const MAX_RECONNECT_ATTEMPTS = 5;
 const BASE_RECONNECT_DELAY = 1000; // 1 second
 
@@ -45,6 +45,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
   const pongTimeouts = useRef<Record<string, NodeJS.Timeout>>({});
   const reconnectTimeouts = useRef<Record<string, NodeJS.Timeout>>({});
   const isClosing = useRef<Record<string, boolean>>({});
+  const connectionRefs = useRef<Record<string, number>>({}); // Reference counting
   
   // Refs to store functions to avoid circular dependencies
   const connectRef = useRef<((containerId: string) => void) | null>(null);
@@ -87,6 +88,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
     // Clean up refs
     delete reconnectAttempts.current[containerId];
     delete isClosing.current[containerId];
+    delete connectionRefs.current[containerId];
     
     // Update connection status
     setConnectionStatus(prev => {
@@ -96,30 +98,19 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
     });
   }, []);
 
-  // Setup ping/pong mechanism
+  // Setup ping/pong mechanism - disabled, backend handles it
   const setupPing = useCallback((containerId: string, ws: WebSocket) => {
-    // Clear existing ping interval
+    // Ping/pong disabled - backend handles connection health
+    // Clear any existing intervals just in case
     if (pingIntervals.current[containerId]) {
       clearInterval(pingIntervals.current[containerId]);
+      delete pingIntervals.current[containerId];
     }
-    
-    pingIntervals.current[containerId] = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'ping' }));
-        
-        // Clear existing pong timeout
-        if (pongTimeouts.current[containerId]) {
-          clearTimeout(pongTimeouts.current[containerId]);
-        }
-        
-        // Set pong timeout
-        pongTimeouts.current[containerId] = setTimeout(() => {
-          safeConsole.warn(`No pong received for container ${containerId}, closing connection`);
-          ws.close(1000, 'Ping timeout');
-        }, PONG_TIMEOUT);
-      }
-    }, PING_INTERVAL);
-  }, [safeConsole]);
+    if (pongTimeouts.current[containerId]) {
+      clearTimeout(pongTimeouts.current[containerId]);
+      delete pongTimeouts.current[containerId];
+    }
+  }, []);
 
   // Enhanced reconnection logic with exponential backoff and jitter
   const scheduleReconnect = useCallback((containerId: string) => {
@@ -146,6 +137,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
     // Clear any existing timeout to prevent multiple reconnection attempts
     if (reconnectTimeouts.current[containerId]) {
       clearTimeout(reconnectTimeouts.current[containerId]);
+      delete reconnectTimeouts.current[containerId];
     }
     
     reconnectTimeouts.current[containerId] = setTimeout(() => {
@@ -158,10 +150,18 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
 
   // Connect to WebSocket with enhanced error handling and reconnection
   const connect = useCallback((containerId: string) => {
-    // Prevent multiple connections or connecting to closing containers
-    if (connections.current[containerId]?.readyState === WebSocket.OPEN || 
-        isClosing.current[containerId]) {
-      safeConsole.log(`WebSocket for ${containerId} already exists or is connecting`);
+    // Increment reference count
+    connectionRefs.current[containerId] = (connectionRefs.current[containerId] || 0) + 1;
+    
+    // Prevent multiple connections - check all states
+    const existingWs = connections.current[containerId];
+    if (existingWs && (existingWs.readyState === WebSocket.CONNECTING || existingWs.readyState === WebSocket.OPEN)) {
+      safeConsole.log(`WebSocket for ${containerId} already exists (state: ${existingWs.readyState}), ref count: ${connectionRefs.current[containerId]}`);
+      return;
+    }
+
+    if (isClosing.current[containerId]) {
+      safeConsole.log(`WebSocket for ${containerId} is closing, skipping connection`);
       return;
     }
 
@@ -171,18 +171,25 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
       delete reconnectTimeouts.current[containerId];
     }
 
-    // Close existing connection if it exists
-    if (connections.current[containerId]) {
+    // Clean up existing connection properly
+    if (existingWs) {
       try {
-        connections.current[containerId].close(1000, 'Reconnecting...');
+        existingWs.onopen = null;
+        existingWs.onmessage = null;
+        existingWs.onclose = null;
+        existingWs.onerror = null;
+        if (existingWs.readyState !== WebSocket.CLOSED) {
+          existingWs.close(1000, 'Reconnecting...');
+        }
       } catch (e) {
         safeConsole.error('Error closing existing connection:', e);
       }
+      delete connections.current[containerId];
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Use direct connection to backend for WebSocket connections
-    const wsUrl = `${protocol}//${window.location.hostname}:8093/ws/logs/${containerId}`;
+    // Connect using environment variable for WebSocket URL
+    const wsBaseUrl = process.env.REACT_APP_WS_URL || 'ws://localhost:8093';
+    const wsUrl = `${wsBaseUrl}/ws/logs/${containerId}`;
     safeConsole.log(`Connecting to WebSocket: ${wsUrl}`);
     
     try {
@@ -211,33 +218,29 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
           safeConsole.log(`Received WebSocket message for ${containerId}:`, data);
           
           if (data.type === 'pong' || data.type === 'connection_established') {
-            // Clear pong timeout
-            if (pongTimeouts.current[containerId]) {
-              clearTimeout(pongTimeouts.current[containerId]);
-              delete pongTimeouts.current[containerId];
-            }
+            // Just acknowledge, no timeout handling needed
             return;
           }
           
           if (data.type === 'ping') {
-            // Respond to ping with pong
+            // Respond to backend ping with pong
             ws.send(JSON.stringify({ type: 'pong' }));
             return;
           }
           
           if (data.type === 'log') {
-            // Ensure the payload is properly structured
+            // Ensure the payload is properly structured with all required fields
             const logEntry = {
               ...data.payload,
-              timestamp: data.payload.timestamp || new Date().toISOString(),
+              timestamp: data.payload.timestamp || data.timestamp || new Date().toISOString(),
               level: data.payload.level || 'info',
               message: data.payload.message || data.payload.raw || '',
-              container: data.payload.container_id || containerId, // Map container_id to container
-              containerId: data.payload.container_id || containerId
+              container: data.payload.container_id || data.payload.containerId || containerId,
+              containerId: data.payload.container_id || data.payload.containerId || containerId,
+              raw: data.payload.raw || data.payload.message || ''
             };
-
-            // Debug: Log the parsed log entry
-            console.log('WebSocket received log:', logEntry);
+            
+            safeConsole.log(`Processing log entry for ${containerId}:`, logEntry);
             
             // Dispatch event for real-time log updates
             const logEvent = new CustomEvent('logMessage', {
@@ -309,11 +312,21 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
     scheduleReconnectRef.current = scheduleReconnect;
   }, [connect, scheduleReconnect]);
 
-  // Disconnect from WebSocket
+  // Disconnect from WebSocket with reference counting
   const disconnect = useCallback((containerId: string) => {
+    // Decrement reference count
+    const currentRefs = connectionRefs.current[containerId] || 0;
+    if (currentRefs > 1) {
+      connectionRefs.current[containerId] = currentRefs - 1;
+      safeConsole.log(`WebSocket ref count decreased for ${containerId}, remaining: ${connectionRefs.current[containerId]}`);
+      return; // Don't disconnect yet, other components still using it
+    }
+    
+    // Only disconnect if this is the last reference
+    safeConsole.log(`WebSocket disconnecting ${containerId}, last reference`);
     isClosing.current[containerId] = true;
     cleanupConnection(containerId);
-  }, [cleanupConnection]);
+  }, [cleanupConnection, safeConsole]);
 
   // Send message through WebSocket
   const sendMessage = useCallback((message: any, containerId?: string) => {

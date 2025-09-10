@@ -1,6 +1,6 @@
 import { ContainerInfo, LogEntry } from '../types/logs';
 
-const API_BASE_URL = '/api/v1';
+const API_BASE_URL = process.env.REACT_APP_API_URL || '/api/v1';
 
 /**
  * Fetches the list of running Docker containers
@@ -28,7 +28,7 @@ export const getContainers = async (): Promise<ContainerInfo[]> => {
 export const getLogs = async (containerId: string, limit: number = 100): Promise<LogEntry[]> => {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/logs/${containerId}?limit=${limit}`
+      `${API_BASE_URL}/logs/${containerId}?tail=${limit}&timestamps=true`
     );
     
     if (!response.ok) {

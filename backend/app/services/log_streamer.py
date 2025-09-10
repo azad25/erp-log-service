@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import re
+import time
 from typing import Dict, List, Optional, Set, Any
 from fastapi import WebSocket
 from .docker import get_docker_service
@@ -172,22 +174,26 @@ class LogStreamer:
     # WebSocket management
     # -------------------------
     async def add_websocket(self, websocket: WebSocket, container_id: str = "all") -> None:
-        """Register a client WebSocket subscription to a container (or 'all')"""
+        """Register a client WebSocket subscription to a container (or 'all') with improved concurrent handling"""
         try:
             # Ensure processor started
             await self.start()
 
             async with self._ws_lock:
+                # Initialize structures if they don't exist
                 if container_id not in self.websockets:
                     self.websockets[container_id] = weakref.WeakSet()
                     self._rate_limits[container_id] = deque()
+                
+                # Add websocket to the container's subscriber set
                 self.websockets[container_id].add(websocket)
 
+                # Track which containers this websocket is subscribed to
                 if websocket not in self.websocket_groups:
                     self.websocket_groups[websocket] = set()
                 self.websocket_groups[websocket].add(container_id)
 
-                # initialize connection state and filters
+                # Initialize connection state and filters
                 self._connection_health[websocket] = datetime.now().timestamp()
                 self._connection_filters[websocket] = {
                     "level": None,
@@ -195,19 +201,22 @@ class LogStreamer:
                     "service": None
                 }
 
-                # initialize buffer for container
+                # Initialize buffer for container
                 if container_id not in self.log_buffer:
                     self.log_buffer[container_id] = deque(maxlen=self.max_logs_per_container)
 
-                # Start streaming for container when appropriate
-                if container_id != "all" and container_id not in self.active_containers:
-                    await self.start_streaming(container_id)
+                logger.info("WebSocket added for container=%s, total subscribers=%d", 
+                           container_id, len(self.websockets[container_id]))
 
-                # send initial logs (fire-and-forget)
+                # Start streaming for this container (will check if already active)
+                if container_id != "all":
+                    # Use create_task to avoid blocking
+                    asyncio.create_task(self.start_streaming(container_id))
+
+                # Send initial logs (fire-and-forget)
                 if self.log_buffer.get(container_id):
                     asyncio.create_task(self._send_initial_logs(websocket, container_id))
 
-                logger.info("WebSocket added for container=%s, total=%d", container_id, len(self.websockets[container_id]))
         except Exception as e:
             logger.exception("Error adding websocket for %s: %s", container_id, e)
             raise
@@ -292,30 +301,50 @@ class LogStreamer:
     # Starting / Stopping streaming for a container (uses LogProcessor)
     # -------------------------
     async def start_streaming(self, container_id: str):
-        """Start streaming for a container (runs initial tail then follow via LogProcessor)"""
+        """Start streaming for a container - supports multiple concurrent WebSocket connections"""
         # Allow self-monitoring for debugging purposes but with rate limiting
         if await self._is_self_container(container_id):
             logger.info("Self-monitoring detected for container %s - proceeding with caution", container_id)
             
+        # Check if streaming is already active for this container
         if container_id in self.active_tasks and not self.active_tasks[container_id].done():
-            logger.debug("Streaming already active for %s", container_id)
+            logger.debug("Streaming already active for %s - reusing existing stream", container_id)
             return
+
+        # Only start streaming if there are active WebSocket subscribers
+        async with self._ws_lock:
+            if container_id not in self.websockets or not bool(self.websockets[container_id]):
+                logger.debug("No WebSocket subscribers for %s, skipping stream start", container_id)
+                return
+            subscriber_count = len(self.websockets[container_id])
 
         self.active_containers.add(container_id)
 
-        # cancel previous task if present
+        # Cancel previous task if present (cleanup)
         prev = self.active_tasks.pop(container_id, None)
         if prev and not prev.done():
             prev.cancel()
+            try:
+                await asyncio.wait_for(prev, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
 
-        # create a task that runs initial tail + follow stream
+        # Create a new streaming task
         task = asyncio.create_task(self._stream_via_processor(container_id))
         self.active_tasks[container_id] = task
-        logger.info("Start requested for streaming container %s", container_id)
+        logger.info("Started streaming for container %s (subscribers: %d)", container_id, subscriber_count)
 
     async def stop_streaming(self, container_id: str):
-        """Stop streaming for a container"""
+        """Stop streaming for a container - only if no more WebSocket subscribers"""
         try:
+            # Check if there are still active subscribers before stopping
+            async with self._ws_lock:
+                if container_id in self.websockets and bool(self.websockets[container_id]):
+                    logger.debug("Not stopping stream for %s - still has %d subscribers", 
+                               container_id, len(self.websockets[container_id]))
+                    return
+
+            # Stop the streaming task
             task = self.active_tasks.pop(container_id, None)
             if task and not task.done():
                 task.cancel()
@@ -324,7 +353,7 @@ class LogStreamer:
                 except (asyncio.CancelledError, asyncio.TimeoutError):
                     pass
 
-            # cancel batch task
+            # Cancel batch task
             batch_task = self._batch_tasks.pop(container_id, None)
             if batch_task and not batch_task.done():
                 batch_task.cancel()
@@ -333,14 +362,14 @@ class LogStreamer:
                 except (asyncio.CancelledError, asyncio.TimeoutError):
                     pass
 
-            # cleanup containers
+            # Cleanup containers
             self.active_containers.discard(container_id)
             self._batch_queue.pop(container_id, None)
-            # don't clear log_buffer here (keep cached logs until memory pressure)
-            logger.info("Stopped streaming for container %s", container_id)
+            # Keep log_buffer for future connections
+            logger.info("Stopped streaming for container %s (no more subscribers)", container_id)
         except Exception as e:
             logger.exception("Error stopping stream for %s: %s", container_id, e)
-            # ensure no dangling state
+            # Ensure no dangling state
             self.active_containers.discard(container_id)
             self.active_tasks.pop(container_id, None)
             self._batch_tasks.pop(container_id, None)
@@ -348,7 +377,7 @@ class LogStreamer:
             raise
 
     async def _stream_via_processor(self, container_id: str):
-        """Stream logs from a container using Docker service."""
+        """Stream logs from a container using Docker service with real-time streaming."""
         try:
             # ensure processor started
             await self.start()
@@ -357,52 +386,94 @@ class LogStreamer:
             if container_id not in self.log_buffer:
                 self.log_buffer[container_id] = deque(maxlen=self.max_logs_per_container)
 
+            logger.info(f"Starting real-time log streaming for container: {container_id}")
             
-            # Skip if already streaming
-            if container_id in self.active_containers:
-                logger.debug(f"Already streaming logs for container: {container_id}")
-                return
-
-            # Mark as active
-            self.active_containers.add(container_id)
-            
-            # Start streaming logs with follow=True to only get new logs
+            # Start streaming logs with follow=True for real-time streaming
             try:
                 docker_service = get_docker_service()
-                log_generator = await docker_service.stream_container_logs(
+                
+                # Get recent logs for context (last 10 lines to avoid overwhelming)
+                recent_logs = await docker_service.get_container_logs(
                     container_id=container_id,
-                    follow=True,  # Only stream new logs
-                    tail=0,       # Don't get any historical logs
-                    timestamps=True,
-                    since=int(time.time())  # Only get logs from now
+                    tail=10,
+                    timestamps=True
                 )
                 
+                # Process recent logs and send them immediately
+                for log_dict in recent_logs:
+                    log_entry = {
+                        'container_id': container_id,
+                        'timestamp': log_dict.get('timestamp', datetime.now().isoformat()),
+                        'message': log_dict.get('message', ''),
+                        'level': log_dict.get('level', 'info').lower(),
+                        'raw': log_dict.get('message', '')
+                    }
+                    
+                    # Add to buffer
+                    self.log_buffer[container_id].append(log_entry)
+                    
+                    # Send to WebSocket clients immediately
+                    await self._send_to_websockets(container_id, [log_entry])
+                
+                logger.info(f"Sent {len(recent_logs)} recent logs for {container_id}")
+                
+                # Start real-time streaming with follow=True and tail=0 for only new logs
+                log_generator = docker_service.stream_container_logs(
+                    container_id=container_id,
+                    follow=True,      # Stream new logs in real-time
+                    tail=0,           # Only new logs, no historical
+                    timestamps=True
+                )
+                
+                logger.info(f"Started real-time log streaming for container: {container_id}")
+                
+                log_count = 0
                 async for log_line in log_generator:
                     if not self._started:
+                        logger.info(f"LogStreamer stopped, breaking log stream for {container_id}")
                         break
                         
                     # Skip empty lines
                     if not log_line or not log_line.strip():
                         continue
                         
-                    # Process log line
-                    log_entry = self._process_log_line(log_line, container_id)
-                    if not log_entry:
-                        continue
+                    log_count += 1
+                    if log_count % 100 == 1:  # Log every 100th message to reduce spam
+                        logger.debug(f"Processing real-time log #{log_count} from {container_id}")
                         
-                    # Add to batch queue
-                    if container_id not in self._batch_queue:
-                        self._batch_queue[container_id] = []
-                    self._batch_queue[container_id].append(log_entry)
+                    # Process log line - create structured log entry
+                    log_entry = {
+                        'container_id': container_id,
+                        'timestamp': datetime.now().isoformat(),
+                        'message': log_line.strip(),
+                        'level': 'info',
+                        'raw': log_line.strip()
+                    }
                     
-                    # Process batch immediately for real-time delivery
-                    await self._process_batch(container_id)
+                    # Extract timestamp if present in log line (Docker format: 2025-09-06T03:10:58.890010636Z MESSAGE)
+                    timestamp_match = re.match(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?)\s+(.+)', log_line)
+                    if timestamp_match:
+                        log_entry['timestamp'] = timestamp_match.group(1)
+                        log_entry['message'] = timestamp_match.group(2).strip()
+                        log_entry['raw'] = log_line.strip()
+                    
+                    # Extract log level if present
+                    level_match = re.search(r'\b(DEBUG|INFO|WARN|WARNING|ERROR|FATAL|TRACE)\b', log_entry['message'], re.IGNORECASE)
+                    if level_match:
+                        log_entry['level'] = level_match.group(1).lower()
+                    
+                    # Add to buffer for caching
+                    self.log_buffer[container_id].append(log_entry)
+                    
+                    # Send immediately to WebSocket clients - this is the key fix
+                    await self._send_to_websockets(container_id, [log_entry])
                         
             except Exception as e:
                 logger.error(f"Error streaming logs for {container_id}: {e}")
+                # Don't re-raise, let the restart logic handle it
                 
         except Exception as e:
-            logger.error(f"Unexpected error in _stream_logs for {container_id}: {e}")
+            logger.error(f"Unexpected error in _stream_via_processor for {container_id}: {e}")
         finally:
             # Clean up
             self.active_containers.discard(container_id)
@@ -414,30 +485,91 @@ class LogStreamer:
                     task.cancel()
             logger.info("Cleaned up stream for %s", container_id)
 
-            # if there are still subscribers, try restart after short delay
-            if container_id in self.websockets and bool(self.websockets[container_id]):
-                logger.info("Restarting stream for %s because subscribers still exist", container_id)
+            # Only restart if there are still active subscribers and the stream wasn't manually stopped
+            async with self._ws_lock:
+                if (container_id in self.websockets and 
+                    bool(self.websockets[container_id])):
+                    logger.info("Restarting stream for %s due to %d active subscribers", 
+                               container_id, len(self.websockets[container_id]))
+                    await asyncio.sleep(2)  # Brief delay before restart
+                    asyncio.create_task(self.start_streaming(container_id))
+                else:
+                    logger.info("No restart needed for %s - no active subscribers", container_id)
 
-    async def _process_batch(self, container_id: str):
-        """Process and send logs to WebSocket clients in real-time"""
+    async def _send_to_websockets(self, container_id: str, log_entries: List[Dict[str, Any]]):
+        """Send log entries directly to WebSocket clients with improved real-time delivery"""
         try:
-            if container_id not in self._batch_queue or not self._batch_queue[container_id]:
+            if not log_entries:
                 return
                 
-            # Get all available logs (no batching for real-time)
-            batch = self._batch_queue[container_id].copy()
-            self._batch_queue[container_id].clear()
-            
-            if not batch:
+            # Build the target set (subscribers to container_id and to 'all')
+            targets = set()
+            async with self._ws_lock:
+                if container_id in self.websockets:
+                    targets.update(list(self.websockets[container_id]))
+                if 'all' in self.websockets:
+                    targets.update(list(self.websockets['all']))
+
+            if not targets:
+                logger.debug(f"No WebSocket targets for container {container_id}")
                 return
-                
-            # Send to all subscribed WebSockets immediately
-            await self._send_to_websockets(container_id, batch)
-                
+
+            # Filter out disconnected websockets and send messages
+            disconnected = []
+            for log_entry in log_entries:
+                # broadcast individually to preserve filtering per client
+                for ws in list(targets):
+                    if ws is None:
+                        continue
+                    try:
+                        # Check WebSocket state more thoroughly
+                        if hasattr(ws, 'client_state'):
+                            if ws.client_state != WebSocketState.CONNECTED:
+                                disconnected.append(ws)
+                                continue
+                        
+                        # Apply filters
+                        filters = self._connection_filters.get(ws, {})
+                        if not self._should_send_log(log_entry, filters):
+                            continue
+                            
+                        # Format message for frontend compatibility - ensure all required fields
+                        formatted_message = {
+                            "type": "log",
+                            "payload": {
+                                "container_id": log_entry.get('container_id') or container_id,
+                                "containerId": log_entry.get('container_id') or container_id,  # Add both formats
+                                "timestamp": log_entry.get('timestamp', datetime.now().isoformat()),
+                                "message": log_entry.get('message', ''),
+                                "level": log_entry.get('level', 'info'),
+                                "raw": log_entry.get('raw', log_entry.get('message', '')),
+                                "container": log_entry.get('container_id') or container_id
+                            },
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        
+                        # Send immediately without batching for real-time delivery
+                        await ws.send_json(formatted_message)
+                        
+                        # update last activity
+                        self._connection_health[ws] = datetime.now().timestamp()
+                        
+                        logger.debug(f"Sent real-time log to WebSocket for container {container_id}: {log_entry['message'][:50]}...")
+                        
+                    except Exception as e:
+                        logger.debug(f"Error sending to websocket: {e}")
+                        disconnected.append(ws)
+
+            # cleanup disconnected websockets
+            if disconnected:
+                for ws in set(disconnected):
+                    try:
+                        await self.remove_websocket(ws, container_id)
+                    except Exception:
+                        logger.debug("Error cleaning up disconnected websocket", exc_info=True)
+                        
         except Exception as e:
-            logger.error(f"Error processing logs for {container_id}: {e}")
-            if container_id in self._batch_tasks:
-                del self._batch_tasks[container_id]
+            logger.error(f"Error sending logs to websockets for {container_id}: {e}")
 
     # -------------------------
     # Processor callback — receives structured log dicts from LogProcessor
@@ -536,8 +668,13 @@ class LogStreamer:
                                 # Format message for frontend compatibility
                                 formatted_message = {
                                     "type": "log",
-                                    "payload": log_entry,
-                                    "timestamp": log_entry.get('timestamp', datetime.now().isoformat())
+                                    "payload": {
+                                        "container_id": log_entry.get('container_id') or log_entry.get('container') or container_id,
+                                        "timestamp": log_entry.get('timestamp', datetime.now().isoformat()),
+                                        "message": log_entry.get('message', ''),
+                                        "level": log_entry.get('level', 'info'),
+                                        "raw": log_entry.get('raw', log_entry.get('message', ''))
+                                    }
                                 }
                                 await ws.send_json(formatted_message)
                                 # update last activity
@@ -556,12 +693,13 @@ class LogStreamer:
                         except Exception:
                             logger.debug("Error cleaning up disconnected websocket", exc_info=True)
 
-                # if no more subscribers, cleanup and stop streaming
+                # Check if no more subscribers and cleanup
                 async with self._ws_lock:
                     if container_id in self.websockets and not bool(self.websockets[container_id]):
-                        logger.info("No more subscribers for %s, stopping stream", container_id)
+                        logger.info("No more subscribers for %s, scheduling cleanup", container_id)
                         self.websockets.pop(container_id, None)
                         self._rate_limits.pop(container_id, None)
+                        # Schedule stop_streaming as a background task
                         asyncio.create_task(self.stop_streaming(container_id))
 
         except asyncio.CancelledError:

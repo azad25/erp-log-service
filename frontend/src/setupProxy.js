@@ -7,47 +7,23 @@ module.exports = function(app) {
     createProxyMiddleware({
       target: 'http://localhost:8093',
       changeOrigin: true,
-      ws: false, // Disable WebSocket proxy for API routes
-      logLevel: 'debug',
-      onError: (err, req, res) => {
-        console.error('API Proxy error:', err);
-        if (res && typeof res.writeHead === 'function') {
-          res.writeHead(500, {
-            'Content-Type': 'application/json',
-          });
-          res.end(JSON.stringify({ error: 'API Proxy Error', details: err.message }));
-        }
-      },
+      ws: false,
+      logLevel: 'silent',
     })
   );
 
-  // Proxy WebSocket connections for logs
+  // Proxy specific WebSocket paths only (avoid React dev server conflict)
   app.use(
-    '/ws',
-    createProxyMiddleware({
+    createProxyMiddleware(['/ws/logs/**', '/ws/stats/**'], {
       target: 'http://localhost:8093',
-      changeOrigin: true,
-      ws: true,
-      logLevel: 'debug',
-      onError: (err, req, res) => {
-        console.error('WebSocket Proxy error:', err);
-      },
-      onProxyReqWs: (proxyReq, req, socket, options, head) => {
-        console.log('Proxying WebSocket connection to:', req.url);
-      },
-    })
-  );
-
-  // WebSocket upgrade handling for log streaming
-  app.use(
-    '/api/v1/logs/ws',
-    createProxyMiddleware({
-      target: 'ws://localhost:8093',
       ws: true,
       changeOrigin: true,
-      logLevel: 'debug',
+      logLevel: 'silent',
+      onProxyReqWs: (proxyReq, req, socket) => {
+        console.log('App WebSocket proxy:', req.url);
+      },
       onError: (err, req, res) => {
-        console.error('WebSocket proxy error:', err);
+        console.error('App WebSocket proxy error:', err.message);
       },
     })
   );

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { LogEntry } from '../types/logs';
 import { useWebSocket } from '../contexts/WebSocketContext';
 
@@ -40,6 +40,9 @@ export interface UseLogMessagesResult {
   isConnecting: boolean;
   handleLogMessage: (log: LogEntry) => void;
   error: Error | null;
+  loadMoreLogs: () => Promise<void>;
+  isLoadingMore: boolean;
+  hasMoreLogs: boolean;
 }
 
 export const useLogMessages = (containerId: string, maxLogs: number = 1000): UseLogMessagesResult => {
@@ -49,7 +52,9 @@ export const useLogMessages = (containerId: string, maxLogs: number = 1000): Use
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isConnecting, setIsConnecting] = useState<boolean>(true);
-  const [error, setError] = useState<Error | null>(null);
+  const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
+  const [hasMoreLogs, setHasMoreLogs] = useState<boolean>(true);
+  const [error] = useState<Error | null>(null);
   const { isConnected: wsIsConnected, connect, disconnect } = useWebSocket();
   
   // Refs for state that shouldn't trigger re-renders
@@ -90,7 +95,7 @@ export const useLogMessages = (containerId: string, maxLogs: number = 1000): Use
     } else {
       updateTimeoutRef.current = null;
     }
-  }, []);
+  }, [maxLogs]);
 
   // Handle incoming log messages with throttling and duplicate prevention
   const handleLogMessage = useCallback((log: LogEntry) => {
@@ -101,23 +106,29 @@ export const useLogMessages = (containerId: string, maxLogs: number = 1000): Use
         return;
       }
 
-      // Ensure message is a string
+      // Ensure message is a string and all required fields are present
       const sanitizedLog = {
         ...log,
-        message: String(log.message),
+        message: String(log.message || log.raw || ''),
         timestamp: new Date(log.timestamp).toISOString(),
         level: log.level || 'info',
+        container: log.container || log.containerId || containerId,
+        containerId: log.containerId || log.container_id || containerId,
+        raw: log.raw || log.message || ''
       };
 
       const logKey = createLogKey(sanitizedLog);
       
       // Prevent duplicate logs
       if (seenLogsRef.current.has(logKey)) {
+        safeConsole.log('Skipping duplicate log:', logKey);
         return;
       }
       
       seenLogsRef.current.add(logKey);
       pendingLogsRef.current.push(sanitizedLog);
+
+      safeConsole.log(`Added log to pending queue for ${containerId}:`, sanitizedLog.message);
 
       // Start processing logs if not already in progress
       if (!updateTimeoutRef.current) {
@@ -126,17 +137,42 @@ export const useLogMessages = (containerId: string, maxLogs: number = 1000): Use
     } catch (error) {
       safeConsole.error('Error processing log message:', error, log);
     }
-  }, [createLogKey]);
+  }, [createLogKey, processPendingLogs, containerId]);
 
-  // Load initial logs via HTTP API
+  // Load initial logs via HTTP API - limit to 20 logs
   const loadInitialLogs = useCallback(async (containerId: string) => {
     try {
-      const response = await fetch(`/api/v1/logs/${containerId}?tail=50&timestamps=true`);
+      const apiBaseUrl = process.env.REACT_APP_API_URL || 'http://localhost:3004/api/v1';
+      const response = await fetch(`${apiBaseUrl}/logs/${containerId}?tail=20&timestamps=true`);
       if (response.ok) {
         const initialLogs = await response.json();
         if (Array.isArray(initialLogs) && initialLogs.length > 0) {
           safeConsole.log(`Loaded ${initialLogs.length} initial logs for ${containerId}`);
-          initialLogs.forEach(log => handleLogMessage(log));
+          
+          // Clear existing logs first to avoid duplicates
+          setLogs([]);
+          seenLogsRef.current.clear();
+          pendingLogsRef.current = [];
+          
+          // Process initial logs directly without going through handleLogMessage to avoid duplicates
+          const processedLogs = initialLogs.map(log => ({
+            ...log,
+            message: String(log.message || log.raw || ''),
+            timestamp: new Date(log.timestamp).toISOString(),
+            level: log.level || 'info',
+            container: log.container || log.containerId || containerId,
+            containerId: log.containerId || log.container_id || containerId,
+            raw: log.raw || log.message || ''
+          }));
+          
+          // Add to seen logs to prevent duplicates
+          processedLogs.forEach(log => {
+            const logKey = createLogKey(log);
+            seenLogsRef.current.add(logKey);
+          });
+          
+          // Set logs directly
+          setLogs(processedLogs.slice(-20)); // Ensure we only keep last 20
         }
       } else {
         safeConsole.error(`Failed to load initial logs: ${response.status} ${response.statusText}`);
@@ -144,29 +180,106 @@ export const useLogMessages = (containerId: string, maxLogs: number = 1000): Use
     } catch (error) {
       safeConsole.error('Error loading initial logs:', error);
     }
-  }, [handleLogMessage]);
+  }, [createLogKey]);
 
-  // Enhanced WebSocket connection management
-  // WebSocket connection and message handling
+  // Load more historical logs
+  const loadMoreLogs = useCallback(async () => {
+    if (!containerId || isLoadingMore || !hasMoreLogs) return;
+    
+    try {
+      setIsLoadingMore(true);
+      const apiBaseUrl = process.env.REACT_APP_API_URL || 'http://localhost:3004/api/v1';
+      
+      // Calculate the number of logs to fetch (current count + 20 more)
+      const currentCount = logs.length;
+      const fetchCount = currentCount + 20;
+      
+      const response = await fetch(`${apiBaseUrl}/logs/${containerId}?tail=${fetchCount}&timestamps=true`);
+      if (response.ok) {
+        const moreLogs = await response.json();
+        if (Array.isArray(moreLogs) && moreLogs.length > currentCount) {
+          safeConsole.log(`Loaded ${moreLogs.length - currentCount} more logs for ${containerId}`);
+          
+          // Process the new logs
+          const processedLogs = moreLogs.map(log => ({
+            ...log,
+            message: String(log.message || log.raw || ''),
+            timestamp: new Date(log.timestamp).toISOString(),
+            level: log.level || 'info',
+            container: log.container || log.containerId || containerId,
+            containerId: log.containerId || log.container_id || containerId,
+            raw: log.raw || log.message || ''
+          }));
+          
+          // Add new logs to seen logs to prevent duplicates
+          processedLogs.forEach(log => {
+            const logKey = createLogKey(log);
+            seenLogsRef.current.add(logKey);
+          });
+          
+          // Update logs with the new ones, respecting maxLogs limit
+          setLogs(prevLogs => {
+            const combinedLogs = [...prevLogs, ...processedLogs.slice(currentCount)];
+            return combinedLogs.length > maxLogs 
+              ? combinedLogs.slice(-maxLogs)
+              : combinedLogs;
+          });
+          
+          // Check if we have more logs available
+          if (moreLogs.length < fetchCount) {
+            setHasMoreLogs(false);
+          }
+        } else {
+          setHasMoreLogs(false);
+        }
+      } else {
+        safeConsole.error(`Failed to load more logs: ${response.status} ${response.statusText}`);
+        setHasMoreLogs(false);
+      }
+    } catch (error) {
+      safeConsole.error('Error loading more logs:', error);
+      setHasMoreLogs(false);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [containerId, isLoadingMore, hasMoreLogs, logs.length, createLogKey]);
+
+  // WebSocket connection and message handling - prevent duplicate connections
   useEffect(() => {
     if (!containerId) return undefined;
+    
+    // Prevent duplicate connections in React StrictMode
+    if (currentContainerRef.current === containerId && wsIsConnected(containerId)) {
+      return undefined;
+    }
+    
+    // Reset logs and state when container changes
+    if (currentContainerRef.current !== containerId) {
+      setLogs([]);
+      seenLogsRef.current.clear();
+      pendingLogsRef.current = [];
+      setHasMoreLogs(true);
+      setIsLoadingMore(false);
+    }
     
     // Mark component as mounted
     isMountedRef.current = true;
     currentContainerRef.current = containerId;
     setIsConnecting(true);
 
-    // Load initial logs first
-    loadInitialLogs(containerId);
-
-    // Connect using the WebSocket context
-    connect(containerId);
+    // Debounce connection to prevent React StrictMode double execution
+    const connectionTimer = setTimeout(() => {
+      if (isMountedRef.current && !wsIsConnected(containerId)) {
+        // Load initial logs first
+        loadInitialLogs(containerId);
+        // Connect using the WebSocket context
+        connect(containerId);
+      }
+    }, 100); // Small delay to prevent duplicate connections
 
     // Listen for WebSocket message events
     const handleMessage = (event: CustomEvent<{ log: LogEntry; containerId: string }>) => {
-      console.log('useLogMessages received event:', event.detail);
       if (event.detail.containerId === containerId && isMountedRef.current) {
-        console.log('Processing log message for container:', containerId, event.detail.log);
         handleLogMessage(event.detail.log);
       }
     };
@@ -206,6 +319,9 @@ export const useLogMessages = (containerId: string, maxLogs: number = 1000): Use
     return () => {
       isMountedRef.current = false;
       
+      // Clear connection timer
+      clearTimeout(connectionTimer);
+      
       // Clear any pending timeouts
       if (updateTimeoutRef.current) {
         clearTimeout(updateTimeoutRef.current);
@@ -227,7 +343,7 @@ export const useLogMessages = (containerId: string, maxLogs: number = 1000): Use
       // Disconnect WebSocket
       disconnect(containerId);
     };
-  }, [containerId, connect, disconnect, wsIsConnected, handleLogMessage]);
+  }, [containerId, connect, disconnect, wsIsConnected, handleLogMessage, loadInitialLogs]);
 
   // Cleanup function to be called by parent component
   const cleanup = useCallback(() => {
@@ -264,6 +380,9 @@ export const useLogMessages = (containerId: string, maxLogs: number = 1000): Use
     isConnected: wsIsConnected(currentContainerRef.current),
     isConnecting,
     handleLogMessage,
-    error
+    error,
+    loadMoreLogs,
+    isLoadingMore,
+    hasMoreLogs
   };
 };

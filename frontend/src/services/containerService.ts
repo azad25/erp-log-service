@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { ContainerInfo } from '../types/containers';
 
-const API_BASE_URL = '/api/v1/logs';
+const API_BASE_URL = process.env.REACT_APP_API_URL ? `${process.env.REACT_APP_API_URL}/logs` : '/api/v1/logs';
 
 export const getContainers = async (): Promise<ContainerInfo[]> => {
   const response = await axios.get(`${API_BASE_URL}/containers`);
@@ -33,6 +33,6 @@ export const restartContainer = async (id: string): Promise<void> => {
 };
 
 export const getContainerStats = async (id: string): Promise<any> => {
-  const response = await axios.get(`${API_BASE_URL}/logs/containers/${id}/stats`);
+  const response = await axios.get(`${API_BASE_URL}/containers/${id}/stats`);
   return response.data;
 };

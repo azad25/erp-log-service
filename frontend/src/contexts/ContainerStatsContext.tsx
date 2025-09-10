@@ -50,6 +50,7 @@ export const ContainerStatsProvider: React.FC<ContainerStatsProviderProps> = ({ 
   const reconnectTimeoutsRef = useRef<Record<string, NodeJS.Timeout>>({});
   const reconnectAttemptsRef = useRef<Record<string, number>>({});
   const isClosingRef = useRef<Record<string, boolean>>({});
+  const connectionRefsRef = useRef<Record<string, number>>({}); // Reference counting
   const mountedRef = useRef(true);
 
   // Safe console for development - memoized to prevent unnecessary re-renders
@@ -79,6 +80,7 @@ export const ContainerStatsProvider: React.FC<ContainerStatsProviderProps> = ({ 
     // Clean up refs
     delete reconnectAttemptsRef.current[containerId];
     delete isClosingRef.current[containerId];
+    delete connectionRefsRef.current[containerId];
     
     // Update connection status only if component is still mounted
     if (mountedRef.current) {
@@ -97,17 +99,26 @@ export const ContainerStatsProvider: React.FC<ContainerStatsProviderProps> = ({ 
     }
   }, []);
 
-  // Connect function with proper error handling
+  // Connect function with proper error handling and reference counting
   const connect = useCallback((containerId: string) => {
+    // Increment reference count
+    connectionRefsRef.current[containerId] = (connectionRefsRef.current[containerId] || 0) + 1;
+    
+    // If already connected, just return
+    if (connectionsRef.current[containerId] && connectionsRef.current[containerId].readyState === WebSocket.OPEN) {
+      safeConsole.log(`Stats WebSocket already connected for ${containerId}, ref count: ${connectionRefsRef.current[containerId]}`);
+      return;
+    }
+    
     // Prevent duplicate connections
     if (connectionsRef.current[containerId] || isClosingRef.current[containerId] || !mountedRef.current) {
       return;
     }
 
     try {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      // Use direct connection to backend for WebSocket connections
-      let wsUrl = `${protocol}//${window.location.hostname}:8093/ws/stats/${containerId}`;
+      // Connect using environment variable for WebSocket URL
+      const wsBaseUrl = process.env.REACT_APP_WS_URL || 'ws://localhost:8093';
+      let wsUrl = `${wsBaseUrl}/ws/stats/${containerId}`;
       
       const newWs = new WebSocket(wsUrl);
       connectionsRef.current[containerId] = newWs;
@@ -151,8 +162,8 @@ export const ContainerStatsProvider: React.FC<ContainerStatsProviderProps> = ({ 
           if (data.type === 'stats' && data.payload) {
             if (mountedRef.current) {
               const statsData: ContainerStats = {
-                id: containerId,
-                containerId: containerId,
+                id: data.payload.containerId || data.payload.container_id || containerId,
+                containerId: data.payload.containerId || data.payload.container_id || containerId,
                 cpuUsage: Number(data.payload.cpuUsage) || 0,
                 cpuCount: Number(data.payload.cpuCount) || 1,
                 memoryUsage: Number(data.payload.memoryUsage) || 0,
@@ -162,11 +173,11 @@ export const ContainerStatsProvider: React.FC<ContainerStatsProviderProps> = ({ 
                 blockRead: Number(data.payload.blockRead) || 0,
                 blockWrite: Number(data.payload.blockWrite) || 0,
                 pids: Number(data.payload.pids) || 0,
-                timestamp: new Date().toISOString()
+                timestamp: data.timestamp || new Date().toISOString()
               };
               
-              console.log('WebSocket received stats:', data);
-              console.log('Updating stats for container:', containerId, statsData);
+              safeConsole.log('WebSocket received stats:', data);
+              safeConsole.log('Updating stats for container:', containerId, statsData);
               
               setStats(prev => ({
                 ...prev,
@@ -174,7 +185,7 @@ export const ContainerStatsProvider: React.FC<ContainerStatsProviderProps> = ({ 
               }));
             }
           } else if (data.type === 'connection_established') {
-            console.log('Stats WebSocket connection established for:', containerId);
+            safeConsole.log('Stats WebSocket connection established for:', containerId);
           } else if (data.type === 'error') {
             safeConsole.error(`Stats WebSocket error for ${containerId}:`, data.message);
           }
@@ -226,8 +237,18 @@ export const ContainerStatsProvider: React.FC<ContainerStatsProviderProps> = ({ 
     }
   }, [safeConsole, cleanupConnection]);
 
-  // Disconnect function
+  // Disconnect function with reference counting
   const disconnect = useCallback((containerId: string) => {
+    // Decrement reference count
+    const currentRefs = connectionRefsRef.current[containerId] || 0;
+    if (currentRefs > 1) {
+      connectionRefsRef.current[containerId] = currentRefs - 1;
+      safeConsole.log(`Stats WebSocket ref count decreased for ${containerId}, remaining: ${connectionRefsRef.current[containerId]}`);
+      return; // Don't disconnect yet, other components still using it
+    }
+    
+    // Only disconnect if this is the last reference
+    safeConsole.log(`Stats WebSocket disconnecting ${containerId}, last reference`);
     isClosingRef.current[containerId] = true;
     cleanupConnection(containerId);
   }, [cleanupConnection]);

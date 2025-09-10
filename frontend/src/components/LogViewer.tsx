@@ -1,21 +1,21 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
-import { LogEntry } from '../types/logs';
+import { useLogMessages } from '../hooks/useLogMessages';
 
 interface LogViewerProps {
-  logs: LogEntry[];
   selectedContainer: string;
-  isLoading: boolean;
-  isConnected: boolean;
   onFilterChange?: (filter: { level: string; search: string }) => void;
 }
 
 const LogViewer: React.FC<LogViewerProps> = ({
-  logs,
   selectedContainer,
-  isLoading,
-  isConnected,
   onFilterChange,
 }) => {
+  // Use WebSocket hook for real-time logs
+  const { logs, isConnected, isConnecting, cleanup, loadMoreLogs, isLoadingMore, hasMoreLogs } = useLogMessages(
+    selectedContainer && selectedContainer !== 'all' ? selectedContainer : '', 
+    100  // Limit to 100 logs maximum for better performance
+  );
+  const isLoading = isConnecting;
   const endOfLogsRef = useRef<HTMLDivElement>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -61,6 +61,13 @@ const LogViewer: React.FC<LogViewerProps> = ({
       endOfLogsRef.current.scrollIntoView();
     }
   }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      cleanup();
+    };
+  }, [cleanup]);
 
   const formatTimestamp = (timestamp: string) => {
     try {
@@ -181,6 +188,26 @@ const LogViewer: React.FC<LogViewerProps> = ({
             <span className="badge bg-info">
               {filteredLogs.length} entries
             </span>
+            {hasMoreLogs && (
+              <button
+                className="btn btn-outline-light btn-sm"
+                onClick={loadMoreLogs}
+                disabled={isLoadingMore}
+                title="Load more historical logs"
+              >
+                {isLoadingMore ? (
+                  <>
+                    <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                    Loading...
+                  </>
+                ) : (
+                  <>
+                    <i className="bi bi-arrow-up me-1"></i>
+                    Load More
+                  </>
+                )}
+              </button>
+            )}
           </div>
         </div>
         <div className="row g-2">

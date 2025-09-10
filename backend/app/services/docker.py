@@ -876,26 +876,31 @@ class DockerService:
             elif since is not None:
                 cmd.extend(['--since', since.isoformat()])
                 
-            # If no since parameter is provided and we want real-time only
+            # If no since parameter is provided, get recent logs for context
             if since_seconds is None and since is None:
-                cmd.extend(['--since', '0s'])  # Get only new logs
+                # Don't add --since to get some historical context
+                pass
                 
             if until:
                 cmd.extend(['--until', until.isoformat()])
                 
-            # Set tail to 0 by default to only get new logs
+            # Set tail - for real-time streaming with tail=0, don't set tail to follow all new logs
             if tail is not None:
-                cmd.extend(['--tail', str(tail)])
+                if tail == 0:
+                    # For real-time streaming, don't set tail to follow all new logs
+                    pass
+                else:
+                    cmd.extend(['--tail', str(tail)])
                 
             cmd.append(container_id)
             
             logger.debug(f"Running command: {' '.join(cmd)}")
             
-            # Start the process
+            # Start the process - redirect stderr to stdout to capture all logs
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,  # Redirect stderr to stdout
                 limit=1024 * 1024  # 1MB buffer
             )
             

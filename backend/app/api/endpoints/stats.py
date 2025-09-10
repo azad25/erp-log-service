@@ -164,6 +164,9 @@ class StatsStreamer:
     
     async def stream_container_stats(self, websocket: WebSocket, container_id: str):
         """Stream container stats to WebSocket using Docker CLI"""
+        # Accept WebSocket connection
+        await websocket.accept()
+        
         if not await self._check_docker_cli():
             await websocket.send_json({
                 "type": "error",
@@ -171,6 +174,13 @@ class StatsStreamer:
                 "timestamp": datetime.utcnow().isoformat()
             })
             return
+            
+        # Send initial connection established message
+        await websocket.send_json({
+            "type": "connection_established",
+            "container_id": container_id,
+            "timestamp": datetime.utcnow().isoformat()
+        })
             
         try:
             # Send initial stats
@@ -217,4 +227,17 @@ stats_streamer = StatsStreamer()
 @router.websocket("/ws/stats/{container_id}")
 async def websocket_stats_endpoint(websocket: WebSocket, container_id: str):
     """WebSocket endpoint for container stats"""
-    await stats_streamer.stream_container_stats(websocket, container_id)
+    logger.info(f"Stats WebSocket starting for container: {container_id}")
+    
+    try:
+        await stats_streamer.stream_container_stats(websocket, container_id)
+    except WebSocketDisconnect:
+        logger.info(f"Stats WebSocket disconnected for container: {container_id}")
+    except Exception as e:
+        logger.error(f"Stats WebSocket error for container {container_id}: {e}")
+    finally:
+        # Clean up any active tasks
+        if container_id in stats_streamer.active_tasks:
+            task = stats_streamer.active_tasks.pop(container_id, None)
+            if task and not task.done():
+                task.cancel()

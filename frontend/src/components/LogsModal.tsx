@@ -7,7 +7,6 @@ import AutoSizer from 'react-virtualized-auto-sizer';
 import 'react-toastify/dist/ReactToastify.css';
 import { LogEntry } from '../types/logs';
 import { useLogMessages } from '../hooks/useLogMessages';
-import { useWebSocket } from '../contexts/WebSocketContext';
 
 const { FixedSizeList } = require('react-window');
 
@@ -39,8 +38,7 @@ const LogsModal: React.FC<LogsModalProps> = ({
   containerId,
   containerName
 }) => {
-  const { logs, cleanup: cleanupLogs, isConnected: isContainerConnected, isConnecting, error: logError } = useLogMessages(containerId && containerId !== 'all' ? containerId : '', VISIBLE_LOGS);
-  const { connect, disconnect } = useWebSocket();
+  const { logs, cleanup: cleanupLogs, isConnected: isContainerConnected, isConnecting, error: logError, loadMoreLogs, isLoadingMore, hasMoreLogs } = useLogMessages(containerId && containerId !== 'all' ? containerId : '', 1000);
   const [searchTerm, setSearchTerm] = useState('');
   const [levelFilter, setLevelFilter] = useState('all');
   const [autoScroll, setAutoScroll] = useState(true);
@@ -66,6 +64,7 @@ const LogsModal: React.FC<LogsModalProps> = ({
   }, []);
 
   const filteredLogs = useMemo(() => {
+    console.log('LogsModal: Filtering logs, total logs:', logs.length, 'for container:', containerId);
     if (!searchTerm.trim() && levelFilter === 'all') return logs;
     const searchTermLower = searchTerm.toLowerCase().trim();
     return logs.filter(log => {
@@ -73,7 +72,7 @@ const LogsModal: React.FC<LogsModalProps> = ({
       if (searchTermLower && !log.message?.toLowerCase().includes(searchTermLower)) return false;
       return true;
     });
-  }, [logs, searchTerm, levelFilter]);
+  }, [logs, searchTerm, levelFilter, containerId]);
 
   const getLogLevelColor = (level: string) => {
     switch (level) {
@@ -98,33 +97,26 @@ const LogsModal: React.FC<LogsModalProps> = ({
 
   const handleClose = useCallback(() => {
     try {
-      if (containerId && containerId !== 'all') {
-        disconnect(containerId);
-      }
       onHide();
       cleanupLogs();
     } catch (err) {
       console.error('Error closing log modal:', err);
       onHide();
     }
-  }, [onHide, cleanupLogs, containerId, disconnect]);
+  }, [onHide, cleanupLogs]);
 
   useEffect(() => {
     if (!show) {
       cleanupLogs();
-      if (containerId && containerId !== 'all') {
-        disconnect(containerId);
-      }
+      console.log('LogsModal: Modal closed, cleaned up logs for', containerId);
     } else {
-      if (containerId && containerId !== 'all') {
-        connect(containerId);
-      }
+      console.log('LogsModal: Modal opened for', containerId, 'isConnected:', isContainerConnected);
       if (logsContainerRef.current) {
         logsContainerRef.current.scrollTop = 0;
         setAutoScroll(true);
       }
     }
-  }, [show, containerId, cleanupLogs, connect, disconnect]);
+  }, [show, cleanupLogs, containerId, isContainerConnected]);
 
   const LogRow: React.FC<ListItemProps> = ({ index, style, data }) => {
     if (!data) return null;
@@ -245,14 +237,36 @@ const LogsModal: React.FC<LogsModalProps> = ({
             <small className="text-muted">
               Showing {filteredLogs.length} of {logs.length} logs
             </small>
-            <Button
-              variant="outline-secondary"
-              size="sm"
-              onClick={handleClearLogs}
-              disabled={!logs.length || isConnecting || !isContainerConnected}
-            >
-              <SyncIcon className="me-1" /> Clear Logs
-            </Button>
+            <div className="d-flex gap-2">
+              {hasMoreLogs && (
+                <Button
+                  variant="outline-primary"
+                  size="sm"
+                  onClick={loadMoreLogs}
+                  disabled={isLoadingMore || isConnecting || !isContainerConnected}
+                >
+                  {isLoadingMore ? (
+                    <>
+                      <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                      Loading...
+                    </>
+                  ) : (
+                    <>
+                      <i className="bi bi-arrow-up me-1"></i>
+                      Load More
+                    </>
+                  )}
+                </Button>
+              )}
+              <Button
+                variant="outline-secondary"
+                size="sm"
+                onClick={handleClearLogs}
+                disabled={!logs.length || isConnecting || !isContainerConnected}
+              >
+                <SyncIcon className="me-1" /> Clear Logs
+              </Button>
+            </div>
           </div>
         </div>
       </Modal.Body>

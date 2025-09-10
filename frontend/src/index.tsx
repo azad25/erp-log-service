@@ -12,16 +12,6 @@ const root = ReactDOM.createRoot(
 
 root.render(
   <React.StrictMode>
-    <ContainerStatsProvider>
-      <WebSocketProvider onMessage={(log: LogEntry, containerId: string) => {
-        // Find all components listening for this containerId and update them
-        const event = new CustomEvent('logMessage', { 
-          detail: { log, containerId } 
-        });
-        window.dispatchEvent(event);
-      }}>
-        <App />
-      </WebSocketProvider>
-    </ContainerStatsProvider>
+    <App />
   </React.StrictMode>
 );

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, FC } from 'react';
+import React, { useState, useEffect, useCallback, FC } from 'react';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import 'bootstrap-icons/font/bootstrap-icons.css';
 import { LogEntry, ContainerInfo, LogFilter } from './types/logs';
@@ -8,7 +8,6 @@ import LogFilterBar from './components/LogFilterBar';
 import ConnectionStatus from './components/ConnectionStatus';
 import { WebSocketProvider } from './contexts/WebSocketContext';
 import { ContainerStatsProvider } from './contexts/ContainerStatsContext';
-import { useLogMessages } from './hooks/useLogMessages';
 import { getContainers } from './services/api';
 import './App.css';
 
@@ -19,10 +18,9 @@ const AppContent: FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<LogFilter>({ level: 'all', search: '', container: 'all' });
-  const [filteredLogs, setFilteredLogs] = useState<LogEntry[]>([]);
+  // Removed filteredLogs state since LogViewer handles filtering internally
   
-  // Use the WebSocket hook for log messages
-  const { logs, isConnected, isConnecting } = useLogMessages(selectedContainer === 'all' ? '' : selectedContainer, 1000);
+  // Remove WebSocket hook from App.tsx since LogViewer now handles it directly
 
 
   const loadContainers = useCallback(async () => {
@@ -55,26 +53,7 @@ const AppContent: FC = () => {
     loadContainers();
   }, [loadContainers]);
 
-  // Apply filters to logs
-  useEffect(() => {
-    let filtered = logs;
-    
-    // Filter by log level
-    if (filter.level !== 'all') {
-      filtered = filtered.filter(log => log.level?.toLowerCase() === filter.level.toLowerCase());
-    }
-    
-    // Filter by search term
-    if (filter.search) {
-      const searchTerm = filter.search.toLowerCase();
-      filtered = filtered.filter(log => 
-        log.message?.toLowerCase().includes(searchTerm) ||
-        log.container?.toLowerCase().includes(searchTerm)
-      );
-    }
-    
-    setFilteredLogs(filtered);
-  }, [logs, filter]);
+  // Removed filter logic since LogViewer handles filtering internally
 
   return (
     <div className="app bg-dark text-light vh-100 d-flex flex-column">
@@ -91,9 +70,9 @@ const AppContent: FC = () => {
             </div>
             <div className="col-md-6 text-end">
               <ConnectionStatus 
-                isConnected={isConnected} 
+                isConnected={true} 
                 lastMessageTime={Date.now()}
-                connectionError={isConnecting ? 'Connecting...' : undefined}
+                connectionError={undefined}
               />
               <button 
                 className="btn btn-outline-primary btn-sm ms-2"
@@ -156,10 +135,7 @@ const AppContent: FC = () => {
                   /* Log Viewer - Added log-viewer class */
                   <div className="log-viewer">
                     <LogViewer 
-                      logs={filteredLogs}
                       selectedContainer={selectedContainer}
-                      isLoading={isLoading || isConnecting}
-                      isConnected={isConnected}
                     />
                   </div>
                 )}
@@ -180,11 +156,11 @@ const App: FC = () => {
   }, []);
 
   return (
-    <WebSocketProvider onMessage={handleLogMessage}>
-      <ContainerStatsProvider>
+    <ContainerStatsProvider>
+      <WebSocketProvider onMessage={handleLogMessage}>
         <AppContent />
-      </ContainerStatsProvider>
-    </WebSocketProvider>
+      </WebSocketProvider>
+    </ContainerStatsProvider>
   );
 };
 

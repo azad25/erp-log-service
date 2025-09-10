@@ -24,7 +24,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [showLogsModal, setShowLogsModal] = useState(false);
-  const { stats: containerStats, startWatching, stopWatching } = useContainerStats();
+  const { stats: containerStats, startWatching, stopWatching, isConnected } = useContainerStats();
   // Local state for display purposes
   interface DisplayStats {
     memoryUsage: number;
@@ -63,10 +63,13 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
   useEffect(() => {
     if (container && show) {
       loadContainerLogs();
+      // Always start watching stats when modal opens, regardless of selection
       startWatching(container.id);
+      console.log('ContainerDetails: Started watching stats for', container.id);
       
       return () => {
         stopWatching(container.id);
+        console.log('ContainerDetails: Stopped watching stats for', container.id);
       };
     }
   }, [container, show, loadContainerLogs, startWatching, stopWatching]);
@@ -75,6 +78,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
   useEffect(() => {
     if (container && container.id && containerStats[container.id]) {
       const stats = containerStats[container.id];
+      console.log('ContainerDetails: Received stats for', container.id, stats);
       setStats({
         memoryUsage: Number(stats.memoryUsage) || 0,
         memoryLimit: Number(stats.memoryLimit) || 1,
@@ -84,6 +88,8 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
         networkTx: Number(stats.networkTx) || 0,
         pids: Number(stats.pids) || 0
       });
+    } else if (container && container.id) {
+      console.log('ContainerDetails: No stats available for', container.id, 'Available containers:', Object.keys(containerStats));
     }
   }, [container, containerStats]);
 
@@ -271,9 +277,17 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
             
             <Col md={6}>
               <Card className="bg-light text-dark h-100 border">
-                <Card.Header>
-                  <i className="bi bi-speedometer2 me-2"></i>
-                  Resource Usage
+                <Card.Header className="d-flex justify-content-between align-items-center">
+                  <span>
+                    <i className="bi bi-speedometer2 me-2"></i>
+                    Resource Usage
+                  </span>
+                  {container && (
+                    <Badge bg={isConnected(container.id) ? 'success' : 'warning'}>
+                      <i className={`bi ${isConnected(container.id) ? 'bi-wifi' : 'bi-wifi-off'} me-1`}></i>
+                      {isConnected(container.id) ? 'Live' : 'Disconnected'}
+                    </Badge>
+                  )}
                 </Card.Header>
                 <Card.Body>
                   <div className="mb-3">

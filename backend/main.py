@@ -150,7 +150,7 @@ async def websocket_endpoint_root(websocket: WebSocket, container_id: str):
 @app.websocket("/ws/stats/{container_id}")
 async def websocket_stats_endpoint_root(websocket: WebSocket, container_id: str):
     """Root level WebSocket endpoint for container stats"""
-    await logs.websocket_stats_endpoint(websocket, container_id)
+    await stats.websocket_stats_endpoint(websocket, container_id)
 
 # Also register under API prefix for consistency
 @app.websocket("/api/v1/logs/ws/{container_id}")
@@ -161,7 +161,7 @@ async def websocket_endpoint_api(websocket: WebSocket, container_id: str):
 @app.websocket("/api/v1/ws/stats/{container_id}")
 async def websocket_stats_endpoint_api(websocket: WebSocket, container_id: str):
     """API prefixed WebSocket stats endpoint"""
-    await websocket_stats_endpoint_root(websocket, container_id)
+    await stats.websocket_stats_endpoint(websocket, container_id)
 
 # Health check endpoint
 @app.get("/health")

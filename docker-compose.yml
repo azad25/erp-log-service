@@ -24,11 +24,6 @@ services:
     volumes:
       - ./:/app
       - /var/run/docker.sock:/var/run/docker.sock:rw
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '1.0'
     networks:
       - erp-network
     profiles:
