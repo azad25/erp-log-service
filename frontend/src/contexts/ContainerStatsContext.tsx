@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode } from 'react';
 
 export interface ContainerStats {
   id: string;
@@ -16,15 +16,11 @@ export interface ContainerStats {
   timestamp: string;
 }
 
-// ContainerStatsState interface removed as it's not used
-
 interface ContainerStatsContextType {
   stats: Record<string, ContainerStats>;
   isLoading: boolean;
   error: string | null;
   isConnected: (containerId: string) => boolean;
-  connect: (containerId: string) => void;
-  disconnect: (containerId: string) => void;
   startWatching: (containerId: string) => void;
   stopWatching: (containerId: string) => void;
 }
@@ -35,258 +31,268 @@ interface ContainerStatsProviderProps {
   children: ReactNode;
 }
 
-// Constants
-// Unused constants - kept for future use
-// const RECONNECT_DELAY = 3000; // 3 seconds
-// const MAX_RECONNECT_ATTEMPTS = 5;
-
 export const ContainerStatsProvider: React.FC<ContainerStatsProviderProps> = ({ children }) => {
-  // State for connection status and stats
+  // Keeping these state variables for future use in the context value
   const [isLoading] = useState<boolean>(false);
   const [error] = useState<string | null>(null);
   const [stats, setStats] = useState<Record<string, ContainerStats>>({});
-  const [connectionStatus, setConnectionStatus] = useState<Record<string, boolean>>({});
+  const [connections, setConnections] = useState<Record<string, boolean>>({});
   
-  // Refs to track connections and prevent memory leaks
-  const connectionsRef = useRef<Record<string, WebSocket>>({});
-  const reconnectTimeoutsRef = useRef<Record<string, NodeJS.Timeout>>({});
-  const reconnectAttemptsRef = useRef<Record<string, number>>({});
-  const isClosingRef = useRef<Record<string, boolean>>({});
-  const connectionRefsRef = useRef<Record<string, number>>({}); // Reference counting
-  const mountedRef = useRef(true);
+  // Refs to track WebSocket instances and timeouts
+  const wsRefs = useRef<Record<string, WebSocket>>({});
+  const reconnectTimeouts = useRef<Record<string, NodeJS.Timeout>>({});
+  const watchCounts = useRef<Record<string, number>>({});
+  const isMounted = useRef(true);
 
-  // Safe console for development - memoized to prevent unnecessary re-renders
-  const safeConsole = useMemo(() => ({
-    log: process.env.NODE_ENV === 'development' ? console.log : () => {},
-    error: process.env.NODE_ENV === 'development' ? console.error : () => {},
-    warn: process.env.NODE_ENV === 'development' ? console.warn : () => {}
-  }), []);
-
-  // Cleanup connection function
-  const cleanupConnection = useCallback((containerId: string) => {
-    // Clear reconnect timeout
-    if (reconnectTimeoutsRef.current[containerId]) {
-      clearTimeout(reconnectTimeoutsRef.current[containerId]);
-      delete reconnectTimeoutsRef.current[containerId];
+  // Log function for debugging
+  const log = useCallback((message: string, data?: any) => {
+    if (process.env.NODE_ENV === 'development') {
+      const timestamp = new Date().toISOString();
+      console.log(`[${timestamp}] ${message}`, data || '');
     }
+  }, []);
+
+  // Cleanup function for WebSocket connection
+  const cleanupConnection = useCallback((containerId: string) => {
+    log(`Cleaning up connection for container ${containerId}`);
     
-    // Close WebSocket
-    const ws = connectionsRef.current[containerId];
+    // Clear any pending reconnection
+    if (reconnectTimeouts.current[containerId]) {
+      log(`Clearing reconnect timeout for container ${containerId}`);
+      clearTimeout(reconnectTimeouts.current[containerId]);
+      delete reconnectTimeouts.current[containerId];
+    }
+
+    // Close WebSocket if it exists
+    const ws = wsRefs.current[containerId];
     if (ws) {
+      log(`Closing WebSocket for container ${containerId}, state: ${ws.readyState}`);
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
         ws.close(1000, 'Cleanup');
       }
-      delete connectionsRef.current[containerId];
+      delete wsRefs.current[containerId];
     }
-    
-    // Clean up refs
-    delete reconnectAttemptsRef.current[containerId];
-    delete isClosingRef.current[containerId];
-    delete connectionRefsRef.current[containerId];
-    
-    // Update connection status only if component is still mounted
-    if (mountedRef.current) {
-      setConnectionStatus(prev => {
-        const newStatus = { ...prev };
-        delete newStatus[containerId];
-        return newStatus;
-      });
-      
-      // Remove stats for disconnected container
-      setStats(prev => {
-        const newStats = { ...prev };
-        delete newStats[containerId];
-        return newStats;
-      });
-    }
-  }, []);
 
+    // Only update state if we're still watching this container
+    if (isMounted.current && watchCounts.current[containerId] > 0) {
+      log(`Updating connection state to disconnected for container ${containerId}`);
+      setConnections(prev => {
+        // Only update if not already disconnected to prevent unnecessary re-renders
+        if (prev[containerId] !== false) {
+          return {
+            ...prev,
+            [containerId]: false
+          };
+        }
+        return prev;
+      });
+    }
+  }, [log]);
+
+  // Connect to WebSocket
   const connect = useCallback((containerId: string) => {
-    connectionRefsRef.current[containerId] = (connectionRefsRef.current[containerId] || 0) + 1;
+    log(`Connecting to WebSocket for container ${containerId}`);
     
-    const existingWs = connectionsRef.current[containerId];
-    if (existingWs && (existingWs.readyState === WebSocket.CONNECTING || existingWs.readyState === WebSocket.OPEN)) {
-      return; 
-    }
-    
-    if (isClosingRef.current[containerId] || !mountedRef.current) {
-      return;
-    }
-    
-    if (connectionsRef.current[containerId]) {
-      const existingWs = connectionsRef.current[containerId];
-      if (existingWs.readyState !== WebSocket.CLOSED) {
-        existingWs.close(1000, 'Reconnecting');
+    // Skip if already connecting/connected
+    const existingWs = wsRefs.current[containerId];
+    if (existingWs) {
+      if (existingWs.readyState === WebSocket.OPEN) {
+        log(`WebSocket already connected for container ${containerId}`);
+        // Update connection status if not already connected
+        setConnections(prev => ({
+          ...prev,
+          [containerId]: true
+        }));
+        return;
       }
-      delete connectionsRef.current[containerId];
+      if (existingWs.readyState === WebSocket.CONNECTING) {
+        log(`WebSocket already connecting for container ${containerId}`);
+        return;
+      }
     }
+
+    // Clean up any existing connection
+    cleanupConnection(containerId);
 
     try {
-      const wsBaseUrl = process.env.REACT_APP_WS_URL || 'ws://localhost:8093';
+      const wsBaseUrl = process.env.REACT_APP_WS_URL || 'ws://localhost:3004';
       const wsUrl = `${wsBaseUrl}/ws/stats/${containerId}`;
+      const ws = new WebSocket(wsUrl);
       
-      try {
-        const ws = new WebSocket(wsUrl);
-        connectionsRef.current[containerId] = ws;
-        
-        ws.onopen = () => {
-          safeConsole.log(`Stats WebSocket connected for container ${containerId}`);
-          reconnectAttemptsRef.current[containerId] = 0;
-          
-          if (mountedRef.current) {
-            setConnectionStatus(prev => ({ ...prev, [containerId]: true }));
-          }
-        };
+      // Store WebSocket reference
+      wsRefs.current[containerId] = ws;
 
-        ws.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            console.log('ContainerStatsContext: Received WebSocket message for', containerId, data);
-            
-            if (data.type === 'stats' && data.payload) {
-              const statsData: ContainerStats = {
-                id: data.payload.containerId || containerId,
-                containerId: data.payload.containerId || containerId,
-                cpuUsage: parseFloat(data.payload.cpuUsage) || 0,
-                cpuCount: parseInt(data.payload.cpuCount) || 1,
-                memoryUsage: parseFloat(data.payload.memoryUsage) || 0,
-                memoryLimit: parseFloat(data.payload.memoryLimit) || 0,
-                memoryPercent: parseFloat(data.payload.memoryPercent) || 0,
-                networkRx: parseFloat(data.payload.networkRx) || 0,
-                networkTx: parseFloat(data.payload.networkTx) || 0,
-                blockRead: parseFloat(data.payload.blockRead) || 0,
-                blockWrite: parseFloat(data.payload.blockWrite) || 0,
-                pids: parseInt(data.payload.pids) || 0,
-                timestamp: data.payload.timestamp || new Date().toISOString()
+      ws.onopen = () => {
+        log(`WebSocket connected for container ${containerId}`);
+        
+        if (isMounted.current) {
+          setConnections(prev => {
+            // Only update if not already connected to prevent unnecessary re-renders
+            if (prev[containerId] !== true) {
+              log(`Updating connection status to connected for ${containerId}`);
+              return {
+                ...prev,
+                [containerId]: true
               };
-              
-              console.log('ContainerStatsContext: Parsed stats data:', statsData);
-              
-              setStats(prevStats => {
+            }
+            return prev;
+          });
+        }
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          log(`Raw WebSocket message for ${containerId}:`, data);
+          
+          // Handle the case where the payload might be at the root or in a payload property
+          const payload = data.payload || data;
+          
+          if (data.type === 'stats' || payload) {
+            const statsData: ContainerStats = {
+              id: containerId,
+              containerId,
+              // Try to get values from payload first, then fall back to root
+              cpuUsage: parseFloat(payload.cpuUsage || data.cpuUsage || 0) || 0,
+              cpuCount: parseInt(payload.cpuCount || data.cpuCount || 1) || 1,
+              memoryUsage: parseFloat(payload.memoryUsage || data.memoryUsage || 0) || 0,
+              memoryLimit: parseFloat(payload.memoryLimit || data.memoryLimit || 0) || 0,
+              memoryPercent: parseFloat(payload.memoryPercent || data.memoryPercent || 0) || 0,
+              networkRx: parseFloat(payload.networkRx || data.networkRx || 0) || 0,
+              networkTx: parseFloat(payload.networkTx || data.networkTx || 0) || 0,
+              blockRead: parseFloat(payload.blockRead || data.blockRead || 0) || 0,
+              blockWrite: parseFloat(payload.blockWrite || data.blockWrite || 0) || 0,
+              pids: parseInt(payload.pids || data.pids || 0) || 0,
+              timestamp: payload.timestamp || data.timestamp || new Date().toISOString()
+            };
+
+            log(`Processed stats for ${containerId}:`, statsData);
+            
+            if (isMounted.current) {
+              setStats(prev => {
                 const newStats = {
-                  ...prevStats,
+                  ...prev,
                   [containerId]: statsData
                 };
-                console.log('ContainerStatsContext: Updated stats state:', newStats);
+                log(`Updated stats state for ${containerId}:`, newStats);
                 return newStats;
               });
-            } else {
-              console.log('ContainerStatsContext: Non-stats message:', data.type);
+              
+              // Force a state update to ensure re-render
+              setConnections(prev => ({
+                ...prev,
+                [containerId]: true
+              }));
             }
-          } catch (error) {
-            safeConsole.error('Error parsing WebSocket message:', error);
           }
-        };
+        } catch (error) {
+          console.error('Error processing WebSocket message:', error, event.data);
+        }
+      };
 
-        ws.onclose = (event) => {
-          delete connectionsRef.current[containerId];
+      ws.onclose = (event) => {
+        log(`WebSocket closed for container ${containerId}`, { code: event.code, reason: event.reason });
+        
+        // Only try to reconnect if the component is still mounted and we're watching this container
+        if (isMounted.current && watchCounts.current[containerId] > 0) {
+          // Only update connection status if this wasn't a clean close
+          if (event.code !== 1000) {
+            log(`Non-normal closure for container ${containerId}, updating connection status`);
+            setConnections(prev => ({
+              ...prev,
+              [containerId]: false
+            }));
+          }
           
-          if (!isClosingRef.current[containerId] && event.code !== 1000 && event.code !== 1001) {
-            setTimeout(() => {
-              if (!isClosingRef.current[containerId]) {
-                connect(containerId);
-              }
-            }, 2000);
-          }
-        };
-
-        ws.onerror = (error) => {
-          safeConsole.error('WebSocket error:', error);
-        };
-
-      } catch (error) {
-        safeConsole.error(`Failed to create stats WebSocket for container ${containerId}:`, error);
-        if (mountedRef.current) {
-          setConnectionStatus(prev => ({ ...prev, [containerId]: false }));
+          const reconnectDelay = 2000; // 2 seconds
+          log(`Scheduling reconnection in ${reconnectDelay}ms for container ${containerId}`);
+          
+          reconnectTimeouts.current[containerId] = setTimeout(() => {
+            if (isMounted.current && watchCounts.current[containerId] > 0) {
+              log(`Attempting to reconnect to container ${containerId}`);
+              connect(containerId);
+            } else {
+              log(`Skipping reconnection for container ${containerId} - no longer being watched`);
+            }
+          }, reconnectDelay);
+        } else {
+          log(`Not reconnecting container ${containerId} - unmounted or not being watched`);
         }
-      }
+      };
+
+      ws.onerror = (error) => {
+        console.error(`WebSocket error for container ${containerId}:`, error);
+      };
     } catch (error) {
-      safeConsole.error(`Failed to create stats WebSocket for container ${containerId}:`, error);
-      if (mountedRef.current) {
-        setConnectionStatus(prev => ({ ...prev, [containerId]: false }));
-      }
+      console.error(`Failed to create WebSocket for container ${containerId}:`, error);
     }
-  }, [safeConsole]);
+  }, [cleanupConnection, log]);
 
-  // Disconnect function with reference counting
-  const disconnect = useCallback((containerId: string) => {
-    // Decrement reference count
-    const currentRefs = connectionRefsRef.current[containerId] || 0;
-    if (currentRefs > 1) {
-      connectionRefsRef.current[containerId] = currentRefs - 1;
-      return; // Don't disconnect yet, other components still using it
-    }
-    
-    // Only disconnect if this is the last reference
-    isClosingRef.current[containerId] = true;
-    cleanupConnection(containerId);
-  }, [cleanupConnection]);
-
-  // Check connection status
-  const isConnected = useCallback((containerId: string) => {
-    return connectionStatus[containerId] === true;
-  }, [connectionStatus]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-      
-      // Mark all as closing
-      Object.keys(connectionsRef.current).forEach(containerId => {
-        isClosingRef.current[containerId] = true;
-      });
-      
-      // Clear all timeouts
-      Object.values(reconnectTimeoutsRef.current).forEach(timeout => {
-        clearTimeout(timeout);
-      });
-      
-      // Close all connections
-      Object.values(connectionsRef.current).forEach(ws => {
-        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-          ws.close(1000, 'Component unmounting');
-        }
-      });
-      
-      // Clear all refs
-      connectionsRef.current = {};
-      reconnectTimeoutsRef.current = {};
-      reconnectAttemptsRef.current = {};
-      isClosingRef.current = {};
-    };
-  }, []);
-
+  // Start watching a container
   const startWatching = useCallback((containerId: string) => {
-    connect(containerId);
-  }, [connect]);
-
-  const stopWatching = useCallback((containerId: string) => {
-    // Decrement reference count
-    const currentCount = connectionRefsRef.current[containerId] || 0;
-    const newCount = Math.max(0, currentCount - 1);
-    connectionRefsRef.current[containerId] = newCount;
-
-    // Only disconnect if no more references and add delay to prevent premature disconnection
-    if (newCount === 0) {
-      setTimeout(() => {
-        // Double-check reference count after delay
-        if (connectionRefsRef.current[containerId] === 0) {
-          disconnect(containerId);
-        }
-      }, 500);
+    log(`Starting watch for container ${containerId}`);
+    
+    // Increment watch count
+    watchCounts.current[containerId] = (watchCounts.current[containerId] || 0) + 1;
+    
+    // Connect if not already watching
+    if (watchCounts.current[containerId] === 1) {
+      connect(containerId);
     }
-  }, [disconnect]);
+  }, [connect, log]);
 
-  const contextValue = {
+  // Stop watching a container
+  const stopWatching = useCallback((containerId: string) => {
+    log(`Stopping watch for container ${containerId}`);
+    
+    // Decrement watch count
+    const newCount = Math.max(0, (watchCounts.current[containerId] || 0) - 1);
+    watchCounts.current[containerId] = newCount;
+    
+    // Disconnect if no more watchers
+    if (newCount <= 0) {
+      cleanupConnection(containerId);
+    }
+  }, [cleanupConnection, log]);
+
+// Check if a container is connected
+const isConnected = useCallback((containerId: string): boolean => {
+  const isConnected = !!connections[containerId];
+  log(`Connection check for ${containerId}: ${isConnected ? 'Connected' : 'Disconnected'}`);
+  return isConnected;
+}, [connections, log]);
+
+// Cleanup on unmount
+useEffect(() => {
+  isMounted.current = true;
+  
+  return () => {
+    isMounted.current = false;
+    
+    // Clean up all connections
+    Object.entries(wsRefs.current).forEach(([containerId, ws]) => {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        ws.close(1000, 'Component unmounted');
+      }
+    });
+    
+    // Clear all timeouts
+    Object.entries(reconnectTimeouts.current).forEach(([containerId, timeout]) => {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    });
+  };
+}, []);
+
+  // Context value
+  const contextValue: ContainerStatsContextType = {
     stats,
     isLoading,
     error,
     isConnected,
-    connect,
-    disconnect,
     startWatching,
-    stopWatching
+    stopWatching,
   };
 
   return (

@@ -13,131 +13,187 @@ interface ContainerDetailsProps {
   onContainerAction: (action: string, containerId: string) => void;
 }
 
-// Reusing ContainerStats interface from ContainerStatsContext
+interface DisplayStats {
+  memoryUsage: number;
+  memoryLimit: number;
+  cpuUsage: number;
+  networkRx: number;
+  networkTx: number;
+  pids: number;
+  blockRead: number;
+  blockWrite: number;
+  cpuCount: number;
+  memoryPercent: number;
+  timestamp: string;
+}
 
 const ContainerDetails: React.FC<ContainerDetailsProps> = ({
-  container,
+  container: containerProp,
   show,
   onHide,
   onContainerAction
 }) => {
+  // State management - all hooks must be called unconditionally at the top level
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [showLogsModal, setShowLogsModal] = useState(false);
-  const { stats: containerStats, startWatching, stopWatching, isConnected } = useContainerStats();
-  // Local state for display purposes
-  interface DisplayStats {
-    memoryUsage: number;
-    memoryLimit: number;
-    cpuUsage: number;
-    diskUsage: number;
-    networkRx: number;
-    networkTx: number;
-    pids: number;
-  }
-
   const [stats, setStats] = useState<DisplayStats>({
     memoryUsage: 0,
     memoryLimit: 1, // Initialize with 1 to avoid division by zero
     cpuUsage: 0,
-    diskUsage: 0,
     networkRx: 0,
     networkTx: 0,
-    pids: 0
+    pids: 0,
+    blockRead: 0,
+    blockWrite: 0,
+    cpuCount: 1,
+    memoryPercent: 0,
+    timestamp: new Date().toISOString()
   });
-
-  const loadContainerLogs = useCallback(async () => {
-    if (!container) return;
+  
+  // Container stats and connection
+  const { stats: containerStats, startWatching, stopWatching, isConnected } = useContainerStats();
+  
+  // Safe container reference
+  const container = containerProp;
+  
+  // Connection status state
+  const [connectionStatus, setConnectionStatus] = useState('Disconnected');
+  
+  // Update connection status when container or connection state changes
+  useEffect(() => {
+    if (container?.id) {
+      const connected = isConnected?.(container.id) || false;
+      setConnectionStatus(connected ? 'Connected' : 'Disconnected');
+    } else {
+      setConnectionStatus('Disconnected');
+    }
+  }, [container?.id, isConnected]);
+  
+  // Status utility functions
+  const getStatusColor = useCallback((status: string) => {
+    if (!status) return 'secondary';
+    const lowerStatus = status.toLowerCase();
+    if (lowerStatus.includes('up') || lowerStatus.includes('running')) return 'success';
+    if (lowerStatus.includes('exited') || lowerStatus.includes('stopped')) return 'danger';
+    if (lowerStatus.includes('created') || lowerStatus.includes('starting')) return 'warning';
+    if (lowerStatus.includes('paused')) return 'info';
+    return 'secondary';
+  }, []);
+  
+  // Handler for loading container logs
+  const loadContainerLogs = useCallback(async (containerId: string) => {
+    if (!containerId) return;
     
     try {
       setLoading(true);
-      const containerLogs = await getLogs(container.id, 10);
+      const containerLogs = await getLogs(containerId, 10);
       setLogs(containerLogs || []);
     } catch (error) {
-      // Silent error handling
+      console.error('Failed to load container logs:', error);
+      setLogs([]);
     } finally {
       setLoading(false);
     }
-  }, [container]);
+  }, []);
 
+  // Handler for container actions (start/stop/restart)
+  const handleContainerAction = useCallback(async (action: string) => {
+    if (!container?.id) return;
+    
+    setLoading(true);
+    try {
+      await onContainerAction(action, container.id);
+    } catch (error) {
+      console.error(`Failed to ${action} container:`, error);
+    } finally {
+      setLoading(false);
+    }
+  }, [container?.id, onContainerAction]);
+  
+  // Memoized handlers
+  const handleClose = useCallback(() => {
+    onHide();
+  }, [onHide]);
+  
+  const handleShowLogs = useCallback(() => {
+    if (container?.id) {
+      loadContainerLogs(container.id);
+      setShowLogsModal(true);
+    }
+  }, [container?.id, loadContainerLogs]);
+  
+  // Get container status information
+  const isRunning = container?.status?.toLowerCase().includes('up') || 
+                   container?.status?.toLowerCase().includes('running') || false;
+  const statusColor = getStatusColor(container?.status || '');
+
+  // Update stats when containerStats changes
   useEffect(() => {
-    if (container && show) {
-      loadContainerLogs();
-      // Always start watching stats when modal opens, regardless of selection
+    if (!container?.id || !containerStats?.[container.id]) {
+      return;
+    }
+
+    const currentStats = containerStats[container.id];
+    
+    // Update stats with proper type conversion and fallbacks
+    setStats(prevStats => ({
+      ...prevStats,
+      memoryUsage: Number(currentStats.memoryUsage) || 0,
+      memoryLimit: Math.max(Number(currentStats.memoryLimit) || 1, 1), // Ensure minimum of 1MB
+      cpuUsage: Number(currentStats.cpuUsage) || 0,
+      networkRx: Number(currentStats.networkRx) || 0,
+      networkTx: Number(currentStats.networkTx) || 0,
+      pids: Number(currentStats.pids) || 0,
+      blockRead: Number(currentStats.blockRead) || 0,
+      blockWrite: Number(currentStats.blockWrite) || 0,
+      cpuCount: Number(currentStats.cpuCount) || 1,
+      memoryPercent: Number(currentStats.memoryPercent) || 0,
+      timestamp: currentStats.timestamp || new Date().toISOString()
+    }));
+  }, [container?.id, containerStats]);
+
+  // Handle container changes and modal open/close
+  useEffect(() => {
+    if (!container?.id || !show) {
+      return;
+    }
+    
+    let timeoutId: NodeJS.Timeout;
+    
+    // Load logs immediately
+    loadContainerLogs(container.id);
+    
+    // Start watching stats if available
+    if (startWatching) {
+      console.log(`Starting to watch container ${container.id}`);
       startWatching(container.id);
     }
-  }, [container, show, loadContainerLogs, startWatching]);
-
-  // Cleanup only on actual unmount - remove aggressive cleanup
-  useEffect(() => {
-    return () => {
-      if (container) {
-        // Remove setTimeout to prevent delayed disconnections
-        stopWatching(container.id);
+    
+    // Cleanup function
+    const cleanup = () => {
+      if (stopWatching && container?.id) {
+        // Delay stopping to allow for quick reopens
+        timeoutId = setTimeout(() => {
+          console.log(`Stopping watch on container ${container.id}`);
+          stopWatching(container.id);
+        }, 2000);
       }
     };
-  }, [stopWatching]); // Remove container dependency to prevent cleanup on container changes
-
-  // Update local stats when containerStats changes
-  useEffect(() => {
-    if (container && container.id && containerStats[container.id]) {
-      const stats = containerStats[container.id];
-      console.log('ContainerDetails: Received stats update for', container.id, stats);
-      // Received stats update - values are already in MB from backend
-      setStats({
-        memoryUsage: Number(stats.memoryUsage) || 0,
-        memoryLimit: Number(stats.memoryLimit) || 1,
-        cpuUsage: Number(stats.cpuUsage) || 0,
-        diskUsage: (Number(stats.blockRead) || 0) + (Number(stats.blockWrite) || 0),
-        networkRx: Number(stats.networkRx) || 0,
-        networkTx: Number(stats.networkTx) || 0,
-        pids: Number(stats.pids) || 0
-      });
-    } else if (container && container.id) {
-      console.log('ContainerDetails: No stats available yet for', container.id);
-    }
-  }, [container, containerStats]);
-
-  const handleContainerAction = async (action: string) => {
-    if (!container) return;
     
-    try {
-      setLoading(true);
-      
-      switch (action) {
-        case 'start':
-          await startContainer(container.id);
-          break;
-        case 'stop':
-          await stopContainer(container.id);
-          break;
-        case 'restart':
-          await restartContainer(container.id);
-          break;
-        default:
-          return;
+    return () => {
+      cleanup();
+      if (timeoutId) {
+        clearTimeout(timeoutId);
       }
-      
-      onContainerAction(action, container.id);
-      
-      // Stats will update automatically via WebSocket
-      
-    } catch (error) {
-      // Silent error handling
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
+  }, [container?.id, show, loadContainerLogs, startWatching, stopWatching]);
 
-  const getStatusColor = (status: string) => {
-    if (status.toLowerCase().includes('up')) return 'success';
-    if (status.toLowerCase().includes('exited')) return 'danger';
-    if (status.toLowerCase().includes('created')) return 'warning';
-    return 'secondary';
-  };
-
-  const getLogLevelColor = (level: string) => {
-    switch (level?.toLowerCase()) {
+  // Log level color utility function
+  const getLogLevelColor = useCallback((level: string) => {
+    if (!level) return 'dark';
+    
+    switch (level.toLowerCase()) {
       case 'error':
       case 'fatal':
         return 'danger';
@@ -149,51 +205,74 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
       case 'debug':
         return 'secondary';
       default:
-        return 'light';
+        return 'dark';
     }
-  };
+  }, []);
 
-  const formatBytes = (bytes: number) => {
+  // Format bytes utility function
+  const formatBytes = useCallback((bytes: number) => {
     if (bytes === 0) return '0 B';
+    if (!bytes || isNaN(bytes)) return '0 B';
+    
     const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
+    const size = parseFloat((bytes / Math.pow(k, i)).toFixed(2));
+    
+    return `${size} ${sizes[i]}`;
+  }, []);
 
-  const formatTime = (timestamp: string) => {
+  const formatTime = useCallback((timestamp: string) => {
     try {
       const date = new Date(timestamp);
+      if (isNaN(date.getTime())) {
+        return timestamp; // Return original if invalid
+      }
+      
       return date.toLocaleString('en-US', {
-        month: 'long',
+        month: 'short',
         day: 'numeric',
         year: 'numeric',
         hour: 'numeric',
         minute: '2-digit',
+        second: '2-digit',
         hour12: true
       });
-    } catch {
+    } catch (error) {
+      console.error('Error formatting timestamp:', error);
       return timestamp;
     }
-  };
+  }, []);
 
+  // Memory usage percentage with safe division
+  const memoryPercent = React.useMemo(() => {
+    if (!stats.memoryLimit || stats.memoryLimit <= 0) return 0;
+    const percent = (stats.memoryUsage / stats.memoryLimit) * 100;
+    return Math.min(100, Math.max(0, percent));
+  }, [stats.memoryUsage, stats.memoryLimit]);
+
+  // CPU usage with bounds checking
+  const cpuPercent = React.useMemo(() => {
+    return Math.min(100, Math.max(0, stats.cpuUsage));
+  }, [stats.cpuUsage]);
+
+  // Early return if no container - must be after all hooks
   if (!container) return null;
-
-  const isRunning = container.status.toLowerCase().includes('up');
-  // Use backend-provided memory percentage for accuracy
-  const memoryPercent = container && container.id && containerStats[container.id] 
-    ? containerStats[container.id].memoryPercent 
-    : (stats.memoryLimit > 0 ? (stats.memoryUsage / stats.memoryLimit) * 100 : 0);
 
   return (
     <>
-      <Modal show={show} onHide={onHide} size="lg" className="container-details-modal" contentClassName="bg-white">
-        <Modal.Header closeButton className="bg-light border-secondary">
-          <Modal.Title className="d-flex align-items-center">
-            <i className={`bi ${isRunning ? 'bi-play-circle text-success' : 'bi-stop-circle text-danger'} me-2`}></i>
-            {container.name.replace('erp-suite-', '')}
-            <Badge bg={getStatusColor(container.status)} className="ms-2">
-              {isRunning ? 'Running' : 'Stopped'}
+      <Modal show={show} onHide={handleClose} size="lg" centered>
+        <Modal.Header closeButton>
+          <Modal.Title>
+            {container.name || container.id}
+            <Badge bg={statusColor} className="ms-2">
+              {container.status || 'Unknown'}
+            </Badge>
+            <Badge 
+              bg={isConnected?.(container.id) ? 'success' : 'warning'} 
+              className="ms-2"
+            >
+              {connectionStatus}
             </Badge>
           </Modal.Title>
         </Modal.Header>
@@ -232,7 +311,8 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
               <Button
                 variant="info"
                 size="sm"
-                onClick={() => setShowLogsModal(true)}
+                onClick={handleShowLogs}
+                disabled={!container.id}
               >
                 <i className="bi bi-file-text me-1"></i>
                 View All Logs
@@ -250,23 +330,43 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
                 </Card.Header>
                 <Card.Body>
                   <div className="mb-2">
-                    <strong>ID:</strong> <code className="text-primary">{container.id}</code>
+                    <strong>ID:</strong> 
+                    <code className="text-primary ms-2">
+                      {container.id?.substring(0, 12) || 'N/A'}
+                    </code>
                   </div>
                   <div className="mb-2">
-                    <strong>Image:</strong> <code className="text-dark">{container.image}</code>
+                    <strong>Image:</strong> 
+                    <code className="text-dark ms-2">{container.image || 'N/A'}</code>
                   </div>
                   <div className="mb-2">
-                    <strong>Created:</strong> {container.created ? formatTime(container.created) : 'N/A'}
+                    <strong>Status:</strong> 
+                    <Badge bg={statusColor} className="ms-2">
+                      {container.status || 'Unknown'}
+                    </Badge>
+                  </div>
+                  <div className="mb-2">
+                    <strong>Created:</strong> 
+                    <span className="ms-2">
+                      {container.created ? formatTime(container.created) : 'N/A'}
+                    </span>
                   </div>
                   <div className="mb-2">
                     <strong>Ports:</strong> 
                     {container.ports && container.ports.length > 0 ? (
                       <div className="mt-1">
                         {container.ports.map((port: string | ContainerPort, index: number) => {
-                          // Handle both string and object port formats
-                          const portStr = typeof port === 'string' 
-                            ? port 
-                            : `${port.host_ip || '0.0.0.0'}:${port.host_port || '?'}->${port.container_port || '?'}${port.protocol ? `/${port.protocol}` : ''}`;
+                          let portStr: string;
+                          
+                          if (typeof port === 'string') {
+                            portStr = port;
+                          } else {
+                            const hostIp = port.host_ip || '0.0.0.0';
+                            const hostPort = port.host_port || '?';
+                            const containerPort = port.container_port || '?';
+                            const protocol = port.protocol ? `/${port.protocol}` : '';
+                            portStr = `${hostIp}:${hostPort}→${containerPort}${protocol}`;
+                          }
                           
                           return (
                             <Badge key={index} bg="primary" className="me-1 mb-1">
@@ -276,7 +376,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
                         })}
                       </div>
                     ) : (
-                      <span className="text-secondary"> None exposed</span>
+                      <span className="text-secondary ms-2">None exposed</span>
                     )}
                   </div>
                 </Card.Body>
@@ -290,59 +390,72 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
                     <i className="bi bi-speedometer2 me-2"></i>
                     Resource Usage
                   </span>
-                  {container && (
-                    <Badge bg={isConnected(container.id) ? 'success' : 'warning'}>
-                      <i className={`bi ${isConnected(container.id) ? 'bi-wifi' : 'bi-wifi-off'} me-1`}></i>
-                      {isConnected(container.id) ? 'Live' : 'Disconnected'}
-                    </Badge>
-                  )}
+                  <Badge bg={isConnected?.(container.id) ? 'success' : 'warning'}>
+                    <i className={`bi ${isConnected?.(container.id) ? 'bi-wifi' : 'bi-wifi-off'} me-1`}></i>
+                    {isConnected?.(container.id) ? 'Live' : 'Disconnected'}
+                  </Badge>
                 </Card.Header>
                 <Card.Body>
+                  {/* Memory Usage */}
                   <div className="mb-3">
                     <div className="d-flex justify-content-between mb-1">
                       <small>Memory Usage</small>
-                      <small>{formatBytes(stats.memoryUsage * 1024 * 1024)} / {formatBytes(stats.memoryLimit * 1024 * 1024)} ({memoryPercent.toFixed(1)}%)</small>
+                      <small>
+                        {formatBytes(stats.memoryUsage * 1024 * 1024)} / {formatBytes(stats.memoryLimit * 1024 * 1024)} 
+                        ({memoryPercent.toFixed(1)}%)
+                      </small>
                     </div>
                     <ProgressBar 
                       now={memoryPercent} 
-                      variant={memoryPercent > 80 ? 'danger' : memoryPercent > 60 ? 'warning' : 'success'}
+                      variant={
+                        memoryPercent > 90 ? 'danger' : 
+                        memoryPercent > 75 ? 'warning' : 'success'
+                      }
                       style={{ height: '8px' }}
                     />
                   </div>
                   
+                  {/* CPU Usage */}
                   <div className="mb-3">
                     <div className="d-flex justify-content-between mb-1">
                       <small>CPU Usage</small>
-                      <small>{stats.cpuUsage.toFixed(1)}%</small>
+                      <small>{cpuPercent.toFixed(1)}%</small>
                     </div>
                     <ProgressBar 
-                      now={stats.cpuUsage} 
-                      variant={stats.cpuUsage > 80 ? 'danger' : stats.cpuUsage > 60 ? 'warning' : 'info'}
+                      now={cpuPercent} 
+                      variant={
+                        cpuPercent > 90 ? 'danger' : 
+                        cpuPercent > 75 ? 'warning' : 'info'
+                      }
                       style={{ height: '8px' }}
                     />
                   </div>
                   
+                  {/* Disk I/O */}
                   <div className="mb-3">
                     <div className="d-flex justify-content-between mb-1">
-                      <small>Disk I/O</small>
-                      <small>{formatBytes(stats.diskUsage * 1024 * 1024)} total</small>
+                      <small>Block I/O</small>
+                      <small>
+                        {formatBytes((stats.blockRead + stats.blockWrite) * 1024 * 1024)} total
+                      </small>
                     </div>
                     <div className="row text-center">
                       <div className="col-6">
                         <div className="text-warning">
-                          <i className="bi bi-hdd"></i> {formatBytes((Number(containerStats[container?.id || '']?.blockRead) || 0) * 1024 * 1024)}
+                          <i className="bi bi-hdd"></i> {formatBytes((stats.blockRead || 0) * 1024 * 1024)}
                         </div>
                         <small className="text-muted">Read</small>
                       </div>
                       <div className="col-6">
                         <div className="text-info">
-                          <i className="bi bi-hdd-fill"></i> {formatBytes((Number(containerStats[container?.id || '']?.blockWrite) || 0) * 1024 * 1024)}
+                          <i className="bi bi-hdd-fill"></i> {formatBytes((stats.blockWrite || 0) * 1024 * 1024)}
                         </div>
                         <small className="text-muted">Write</small>
                       </div>
                     </div>
                   </div>
                   
+                  {/* Network I/O */}
                   <div className="row text-center">
                     <div className="col-6">
                       <div className="text-success">
@@ -357,6 +470,15 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
                       <small className="text-muted">Network Out</small>
                     </div>
                   </div>
+
+                  {/* Process Count */}
+                  {stats.pids > 0 && (
+                    <div className="mt-3 text-center">
+                      <div className="text-secondary">
+                        <i className="bi bi-cpu"></i> {stats.pids} processes
+                      </div>
+                    </div>
+                  )}
                 </Card.Body>
               </Card>
             </Col>
@@ -370,9 +492,10 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
                 Recent Logs (Last 10)
               </span>
               <Button
-                variant="outline-light"
+                variant="outline-secondary"
                 size="sm"
-                onClick={() => setShowLogsModal(true)}
+                onClick={handleShowLogs}
+                disabled={!container.id}
               >
                 View All
               </Button>
@@ -383,90 +506,73 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
                   <div className="spinner-border spinner-border-sm text-primary" role="status">
                     <span className="visually-hidden">Loading...</span>
                   </div>
+                  <div className="mt-2">Loading logs...</div>
                 </div>
               ) : logs.length > 0 ? (
                 <div className="log-entries">
-                  {logs.slice(-10).map((log, index) => (
-                    <div 
-                      key={index} 
-                      className={`log-entry p-2 mb-2 rounded border-start border-3 ${
-                        log.level?.toLowerCase() === 'error' || log.level?.toLowerCase() === 'fatal' 
-                          ? 'bg-danger bg-opacity-10 border-danger' 
-                          : 'bg-success bg-opacity-10 border-success'
-                      }`}
-                      style={{
-                        animation: `slideIn 0.3s ease-out ${index * 0.1}s both`
-                      }}
-                    >
-                      <div className="d-flex justify-content-between align-items-start mb-1">
-                        <Badge 
-                          bg={getLogLevelColor(log.level || 'info')} 
-                          className="me-2" 
-                          style={{
-                            backgroundColor: getLogLevelColor(log.level || 'info') === 'success' ? '#28a745' : undefined,
-                            color: 'white',
-                            fontWeight: '500',
-                            fontSize: '0.8em',
-                            padding: '0.35em 0.65em'
-                          }}
-                        >
-                          {log.level || 'INFO'}
-                        </Badge>
-                        <small className="text-dark">
-                          {formatTime(log.timestamp)}
-                        </small>
+                  {logs.slice(-10).map((log, index) => {
+                    const level = log.level || 'info';
+                    const isError = level.toLowerCase() === 'error' || level.toLowerCase() === 'fatal';
+                    
+                    return (
+                      <div 
+                        key={`${log.timestamp}-${index}`}
+                        className={`log-entry p-2 mb-2 rounded border-start border-3 ${
+                          isError
+                            ? 'bg-danger bg-opacity-10 border-danger' 
+                            : 'bg-success bg-opacity-10 border-success'
+                        }`}
+                      >
+                        <div className="d-flex justify-content-between align-items-start mb-1">
+                          <Badge 
+                            bg={getLogLevelColor(level)} 
+                            className="me-2" 
+                            style={{ fontSize: '0.75em' }}
+                          >
+                            {level.toUpperCase()}
+                          </Badge>
+                          <small className="text-muted">
+                            {formatTime(log.timestamp)}
+                          </small>
+                        </div>
+                        <div className="log-message">
+                          <code style={{ fontSize: '0.85em', wordBreak: 'break-word' }}>
+                            {log.message || log.raw || 'Empty log entry'}
+                          </code>
+                        </div>
                       </div>
-                      <div className="log-message">
-                        {(() => {
-                          try {
-                            // Try to parse as JSON for pretty printing
-                            const message = log.message || log.raw || '';
-                            const jsonMatch = message.match(/^({[\s\S]*}|\[[\s\S]*\])$/);
-                            
-                            if (jsonMatch) {
-                              const parsed = JSON.parse(message);
-                              return (
-                                <pre className="mb-0">
-                                  <code>
-                                    {JSON.stringify(parsed, null, 2)}
-                                  </code>
-                                </pre>
-                              );
-                            }
-                            return <code>{message}</code>;
-                          } catch (e) {
-                            // If not valid JSON, return as plain text
-                            return <code>{log.message || log.raw}</code>;
-                          }
-                        })()}
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
-                <div className="text-center text-secondary py-3">
+                <div className="text-center text-secondary py-4">
                   <i className="bi bi-journal-x fs-1"></i>
-                  <div>No logs available</div>
+                  <div className="mt-2">No logs available</div>
+                  <small className="text-muted">
+                    {isRunning ? 'Container may not be producing logs' : 'Container is not running'}
+                  </small>
                 </div>
               )}
             </Card.Body>
           </Card>
         </Modal.Body>
         
-        <Modal.Footer className="bg-light border-secondary">
-          <Button variant="secondary" onClick={onHide}>
+        <Modal.Footer className="bg-light border-top">
+          <Button variant="secondary" onClick={handleClose}>
             Close
           </Button>
         </Modal.Footer>
       </Modal>
 
       {/* Full Logs Modal */}
-      <LogsModal
-        show={showLogsModal}
-        onHide={() => setShowLogsModal(false)}
-        containerId={container.id}
-        containerName={container.name}
-      />
+      {showLogsModal && container?.id && (
+        <LogsModal
+          show={showLogsModal}
+          onHide={() => setShowLogsModal(false)}
+          containerId={container.id}
+          containerName={container.name || container.id}
+        />
+      )}
     </>
   );
 };

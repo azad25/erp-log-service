@@ -96,8 +96,6 @@ export const useLogMessages = (containerId: string | null, maxLogs: number = 25)
       const oldestLog = sortedLogs.length > 0 ? sortedLogs[0] : null;
       const beforeTimestamp = oldestLog ? oldestLog.timestamp : undefined;
       
-      console.log('Loading more logs before:', beforeTimestamp, 'Current logs count:', logs.length);
-      
       const response = await getLogs(containerId, 25, beforeTimestamp);
       
       if (response && Array.isArray(response)) {
@@ -105,15 +103,11 @@ export const useLogMessages = (containerId: string | null, maxLogs: number = 25)
           log && log.container_id && log.timestamp && log.message
         );
         
-        console.log('Received', validLogs.length, 'older logs');
-        
         // Filter out logs we've already seen
         const newLogs = validLogs.filter((log: LogEntry) => {
           const logKey = createLogKey(log);
           return !seenLogsRef.current.has(logKey);
         });
-        
-        console.log('New unique logs:', newLogs.length);
         
         // Add new logs to seen set
         newLogs.forEach((log: LogEntry) => {

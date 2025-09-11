@@ -152,7 +152,6 @@ const AppContent: FC = () => {
 const App: FC = () => {
   const handleLogMessage = useCallback((log: LogEntry, containerId: string) => {
     // Log message handling is now done in the WebSocket context
-    console.log('Received log message:', log, 'for container:', containerId);
   }, []);
 
   return (

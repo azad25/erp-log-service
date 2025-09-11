@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card, ProgressBar, Badge } from 'react-bootstrap';
 import { useContainerStats } from '../contexts/ContainerStatsContext';
 
@@ -23,17 +23,43 @@ const formatPercentage = (value: number, max: number = 100): string => {
 
 const ContainerStats: React.FC<ContainerStatsProps> = ({ containerId, className = '' }) => {
   const { stats, isLoading, error, startWatching, stopWatching, isConnected } = useContainerStats();
+  const [isWatching, setIsWatching] = useState(false);
 
   useEffect(() => {
     if (containerId && containerId !== 'all') {
-      console.log('Starting stats watching for container:', containerId);
-      startWatching(containerId);
+      if (!isWatching) {
+        console.log(`Starting to watch container ${containerId}`);
+        startWatching(containerId);
+        setIsWatching(true);
+      }
+      
       return () => {
-        console.log('Stopping stats watching for container:', containerId);
+        console.log(`Stopping watch on container ${containerId}`);
         stopWatching(containerId);
+        setIsWatching(false);
       };
     }
-  }, [containerId, startWatching, stopWatching]);
+  }, [containerId, startWatching, stopWatching, isWatching]);
+  
+  // Log connection status changes
+  useEffect(() => {
+    if (containerId && containerId !== 'all') {
+      console.log(`Connection status for ${containerId}: ${isConnected(containerId) ? 'Connected' : 'Disconnected'}`);
+    }
+  }, [containerId, isConnected]);
+
+  if (isLoading) {
+    return (
+      <Card className={className}>
+        <Card.Body className="text-center">
+          <div className="spinner-border spinner-border-sm me-2" role="status">
+            <span className="visually-hidden">Loading...</span>
+          </div>
+          Loading container stats...
+        </Card.Body>
+      </Card>
+    );
+  }
 
   if (error) {
     return (

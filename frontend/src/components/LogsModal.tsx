@@ -58,7 +58,6 @@ const LogsModal: React.FC<LogsModalProps> = ({
   }, []);
 
   const filteredLogs = useMemo(() => {
-    console.log('LogsModal: Filtering logs, total logs:', logs.length, 'for container:', containerId);
     if (!searchTerm.trim() && levelFilter === 'all') return logs;
     const searchTermLower = searchTerm.toLowerCase().trim();
     return logs.filter(log => {
@@ -66,7 +65,7 @@ const LogsModal: React.FC<LogsModalProps> = ({
       if (searchTermLower && !log.message?.toLowerCase().includes(searchTermLower)) return false;
       return true;
     });
-  }, [logs, searchTerm, levelFilter, containerId]);
+  }, [logs, searchTerm, levelFilter]);
 
   const getLogLevelColor = (level: string) => {
     switch (level?.toLowerCase()) {
@@ -96,17 +95,23 @@ const LogsModal: React.FC<LogsModalProps> = ({
     }
   }, [cleanupLogs]);
 
-  // Cleanup only on actual unmount - remove aggressive cleanup
+  // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      // Only cleanup when component is actually unmounting
-      // Remove setTimeout to prevent delayed disconnections
-      if (containerId && containerId !== 'all') {
-        // Use immediate cleanup but only on true unmount
+    // Only cleanup when component is actually unmounting
+    if (containerId && containerId !== 'all') {
+      // Use a small delay to handle quick reopens
+      const timer = setTimeout(() => {
         disconnect(containerId);
-      }
-    };
-  }, [disconnect]); // Remove containerId dependency to prevent cleanup on container changes
+      }, 1000);
+      
+      return () => {
+        clearTimeout(timer);
+      };
+    }
+    
+    // Return an empty cleanup function if no cleanup is needed
+    return () => {};
+  }, [disconnect, containerId]);
 
   const handleClose = useCallback(() => {
     try {
