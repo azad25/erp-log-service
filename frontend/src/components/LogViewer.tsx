@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useLogMessages } from '../hooks/useLogMessages';
+import { Button, Spinner } from 'react-bootstrap';
 
 interface LogViewerProps {
   selectedContainer: string;
@@ -13,7 +14,7 @@ const LogViewer: React.FC<LogViewerProps> = ({
   // Use WebSocket hook for real-time logs
   const { logs, isConnected, isConnecting, cleanup, loadMoreLogs, isLoadingMore, hasMoreLogs } = useLogMessages(
     selectedContainer && selectedContainer !== 'all' ? selectedContainer : '', 
-    100  // Limit to 100 logs maximum for better performance
+    25  // Limit to 25 logs maximum for better UX
   );
   const isLoading = isConnecting;
   const endOfLogsRef = useRef<HTMLDivElement>(null);
@@ -47,6 +48,11 @@ const LogViewer: React.FC<LogViewerProps> = ({
   }, [logs, autoScroll, isAtBottom]);
 
   // Add scroll event listener
+  const handleLoadMore = () => {
+    // Load more logs requested
+    loadMoreLogs();
+  };
+
   useEffect(() => {
     const container = logContainerRef.current;
     if (container) {
@@ -188,26 +194,6 @@ const LogViewer: React.FC<LogViewerProps> = ({
             <span className="badge bg-info">
               {filteredLogs.length} entries
             </span>
-            {hasMoreLogs && (
-              <button
-                className="btn btn-outline-light btn-sm"
-                onClick={loadMoreLogs}
-                disabled={isLoadingMore}
-                title="Load more historical logs"
-              >
-                {isLoadingMore ? (
-                  <>
-                    <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
-                    Loading...
-                  </>
-                ) : (
-                  <>
-                    <i className="bi bi-arrow-up me-1"></i>
-                    Load More
-                  </>
-                )}
-              </button>
-            )}
           </div>
         </div>
         <div className="row g-2">
@@ -292,6 +278,25 @@ const LogViewer: React.FC<LogViewerProps> = ({
           </div>
         ) : (
           <div className="log-entries">
+            {/* Show load more button at the top for older logs */}
+            {hasMoreLogs && (
+              <Button 
+                variant="outline-secondary" 
+                size="sm" 
+                onClick={handleLoadMore}
+                disabled={isLoadingMore}
+                className="mb-2 w-100"
+              >
+                {isLoadingMore ? (
+                  <>
+                    <Spinner size="sm" className="me-2" />
+                    Loading...
+                  </>
+                ) : (
+                  'Load More (Older)'
+                )}
+              </Button>
+            )}
             {filteredLogs.map((log, index) => {
               const isError = log.level?.toLowerCase() === 'error' || log.level?.toLowerCase() === 'fatal';
               const isWarning = log.level?.toLowerCase() === 'warn' || log.level?.toLowerCase() === 'warning';

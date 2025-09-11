@@ -1,24 +1,11 @@
-import * as React from 'react';
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Modal, Button, Badge, Row, Col, Form, InputGroup, Spinner, Alert } from 'react-bootstrap';
 import { FaCircle, FaSearch, FaSync, FaExclamationTriangle } from 'react-icons/fa';
 import { ToastContainer, toast } from 'react-toastify';
-import AutoSizer from 'react-virtualized-auto-sizer';
 import 'react-toastify/dist/ReactToastify.css';
-import { LogEntry } from '../types/logs';
 import { useLogMessages } from '../hooks/useLogMessages';
 
-const { FixedSizeList } = require('react-window');
-
-interface ListItemProps {
-  index: number;
-  style: React.CSSProperties;
-  data: LogEntry[];
-}
-
-const SCROLL_THRESHOLD = 50;
-const LOG_ITEM_HEIGHT = 40;
-const VISIBLE_LOGS = 100;
+const SCROLL_THRESHOLD = 100; // Pixels from bottom to trigger auto-scroll
 
 const CircleIcon = FaCircle as React.ComponentType<{ size?: number; className?: string }>;
 const SearchIcon = FaSearch as React.ComponentType<{ className?: string }>;
@@ -38,7 +25,7 @@ const LogsModal: React.FC<LogsModalProps> = ({
   containerId,
   containerName
 }) => {
-  const { logs, cleanup: cleanupLogs, isConnected: isContainerConnected, isConnecting, error: logError, loadMoreLogs, isLoadingMore, hasMoreLogs } = useLogMessages(containerId && containerId !== 'all' ? containerId : '', 1000);
+  const { logs, cleanup: cleanupLogs, isConnected: isContainerConnected, isConnecting, error: logError, loadMoreLogs, isLoadingMore, hasMoreLogs, disconnect } = useLogMessages(containerId && containerId !== 'all' ? containerId : '', 25);
   const [searchTerm, setSearchTerm] = useState('');
   const [levelFilter, setLevelFilter] = useState('all');
   const [autoScroll, setAutoScroll] = useState(true);
@@ -50,11 +37,18 @@ const LogsModal: React.FC<LogsModalProps> = ({
     if (autoScroll && logsEndRef.current && logs.length > 0) {
       // Use a timeout to prevent infinite scrolling loops
       const timeoutId = setTimeout(() => {
-        logsEndRef.current?.scrollIntoView({ behavior: 'auto' });
-      }, 50);
+        logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
       return () => clearTimeout(timeoutId);
     }
   }, [logs.length, autoScroll]);
+
+  // Update last updated time when new logs arrive
+  useEffect(() => {
+    if (logs.length > 0) {
+      setLastUpdated(new Date());
+    }
+  }, [logs.length]);
 
   const handleScroll = useCallback(() => {
     if (!logsContainerRef.current) return;
@@ -75,12 +69,19 @@ const LogsModal: React.FC<LogsModalProps> = ({
   }, [logs, searchTerm, levelFilter, containerId]);
 
   const getLogLevelColor = (level: string) => {
-    switch (level) {
-      case 'error': return '#dc3545';
-      case 'warn': return '#ffc107';
-      case 'debug': return '#6c757d';
+    switch (level?.toLowerCase()) {
+      case 'error':
+      case 'fatal':
+        return 'danger';
+      case 'warn':
+      case 'warning':
+        return 'warning';
       case 'info':
-      default: return '#0d6efd';
+        return 'success';
+      case 'debug':
+        return 'secondary';
+      default:
+        return 'light';
     }
   };
 
@@ -95,40 +96,51 @@ const LogsModal: React.FC<LogsModalProps> = ({
     }
   }, [cleanupLogs]);
 
+  // Cleanup only on actual unmount - remove aggressive cleanup
+  useEffect(() => {
+    return () => {
+      // Only cleanup when component is actually unmounting
+      // Remove setTimeout to prevent delayed disconnections
+      if (containerId && containerId !== 'all') {
+        // Use immediate cleanup but only on true unmount
+        disconnect(containerId);
+      }
+    };
+  }, [disconnect]); // Remove containerId dependency to prevent cleanup on container changes
+
   const handleClose = useCallback(() => {
     try {
       onHide();
-      cleanupLogs();
     } catch (err) {
-      console.error('Error closing log modal:', err);
+      // Silent error handling
       onHide();
     }
-  }, [onHide, cleanupLogs]);
+  }, [onHide]);
 
   useEffect(() => {
-    if (!show) {
-      cleanupLogs();
-      console.log('LogsModal: Modal closed, cleaned up logs for', containerId);
-    } else {
-      console.log('LogsModal: Modal opened for', containerId, 'isConnected:', isContainerConnected);
+    if (show) {
+      // Modal opened - reset scroll and auto-scroll
       if (logsContainerRef.current) {
         logsContainerRef.current.scrollTop = 0;
         setAutoScroll(true);
       }
     }
-  }, [show, cleanupLogs, containerId, isContainerConnected]);
+  }, [show, containerId]);
 
-  const LogRow: React.FC<ListItemProps> = ({ index, style, data }) => {
-    if (!data) return null;
-    const log = data[index];
-    if (!log) return null;
-    return (
-      <div style={style} className={`log-entry log-${log.level || 'info'} d-flex align-items-center px-2`}>
-        <span className="text-muted small me-2" style={{ minWidth: '160px' }}>{new Date(log.timestamp).toLocaleString()}</span>
-        <span className="text-uppercase small fw-bold me-2" style={{ minWidth: '60px', color: getLogLevelColor(log.level) }}>{log.level || 'info'}</span>
-        <span className="log-message text-truncate">{log.message}</span>
-      </div>
-    );
+  const formatTime = (timestamp: string) => {
+    try {
+      const date = new Date(timestamp);
+      return date.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true
+      });
+    } catch {
+      return timestamp;
+    }
   };
 
   const renderLoadingState = () => (
@@ -211,21 +223,74 @@ const LogsModal: React.FC<LogsModalProps> = ({
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           <div className="bg-white rounded border border-light flex-grow-1" ref={logsContainerRef} onScroll={handleScroll} style={{ overflowY: 'auto' }}>
             {filteredLogs.length > 0 ? (
-              <AutoSizer>
-                {({ height, width }: { height: number; width: number }) => (
-                  <FixedSizeList
-                    height={height}
-                    itemCount={filteredLogs.length}
-                    itemSize={LOG_ITEM_HEIGHT}
-                    width={width}
-                    overscanCount={10}
-                    itemData={filteredLogs}
-                    itemKey={(index: number) => filteredLogs[index]?.timestamp || index.toString()}
-                  >
-                    {LogRow}
-                  </FixedSizeList>
+              <div>
+                {/* Load more button at the top for older logs */}
+                {hasMoreLogs && (
+                  <div className="text-center p-3 border-bottom bg-light">
+                    <button
+                      className="btn btn-outline-primary btn-sm"
+                      onClick={async () => {
+                        const scrollContainer = logsContainerRef.current;
+                        const scrollHeightBefore = scrollContainer?.scrollHeight || 0;
+                        
+                        await loadMoreLogs();
+                        
+                        // Maintain scroll position after loading more logs
+                        if (scrollContainer) {
+                          const scrollHeightAfter = scrollContainer.scrollHeight;
+                          const heightDiff = scrollHeightAfter - scrollHeightBefore;
+                          scrollContainer.scrollTop += heightDiff;
+                        }
+                      }}
+                      disabled={isLoadingMore || isConnecting || !isContainerConnected}
+                    >
+                      {isLoadingMore ? (
+                        <>
+                          <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                          Loading older logs...
+                        </>
+                      ) : (
+                        <>
+                          <i className="bi bi-arrow-up me-1"></i>
+                          Load More (Older)
+                        </>
+                      )}
+                    </button>
+                  </div>
                 )}
-              </AutoSizer>
+                <div style={{ height: '400px', overflowY: 'auto' }}>
+                  {filteredLogs.map((log, index) => (
+                    <div 
+                      key={`${log.container_id}-${log.timestamp}-${index}`}
+                      className={`log-entry p-2 mb-2 rounded border-start border-3 ${
+                        log.level?.toLowerCase() === 'error' || log.level?.toLowerCase() === 'fatal' 
+                          ? 'bg-danger bg-opacity-10 border-danger' 
+                          : 'bg-success bg-opacity-10 border-success'
+                      }`}
+                      style={{
+                        animation: `slideIn 0.3s ease-out ${index * 0.05}s both`
+                      }}
+                    >
+                      <div className="d-flex justify-content-between align-items-start mb-1">
+                        <Badge 
+                          bg={getLogLevelColor(log.level || 'info')} 
+                          className="me-2" 
+                        >
+                          {log.level || 'INFO'}
+                        </Badge>
+                        <small className="text-muted">
+                          {formatTime(log.timestamp)}
+                        </small>
+                      </div>
+                      <div className="log-message">
+                        <code style={{ fontSize: '0.85em', wordBreak: 'break-word' }}>
+                          {log.message || log.raw}
+                        </code>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             ) : (
               <div className="d-flex justify-content-center align-items-center h-100">
                 <p className="text-muted mb-0">No logs available</p>
@@ -238,26 +303,6 @@ const LogsModal: React.FC<LogsModalProps> = ({
               Showing {filteredLogs.length} of {logs.length} logs
             </small>
             <div className="d-flex gap-2">
-              {hasMoreLogs && (
-                <Button
-                  variant="outline-primary"
-                  size="sm"
-                  onClick={loadMoreLogs}
-                  disabled={isLoadingMore || isConnecting || !isContainerConnected}
-                >
-                  {isLoadingMore ? (
-                    <>
-                      <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
-                      Loading...
-                    </>
-                  ) : (
-                    <>
-                      <i className="bi bi-arrow-up me-1"></i>
-                      Load More
-                    </>
-                  )}
-                </Button>
-              )}
               <Button
                 variant="outline-secondary"
                 size="sm"

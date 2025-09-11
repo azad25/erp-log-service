@@ -4,12 +4,12 @@ Handles all Docker-related operations using docker SDK and CLI commands.
 """
 
 import asyncio
-import json
 import logging
-import time
-from typing import List, Dict, Any, Optional, Union, AsyncGenerator
+import json
+import re
+from typing import Dict, List, Optional, Any
 from datetime import datetime
-import docker
+from .log_processor import LogProcessor
 from docker.models.containers import Container
 from docker.errors import DockerException
 from functools import lru_cache
@@ -409,11 +409,11 @@ class DockerService:
             )
             stdout, stderr = await proc.communicate()
             
-            # Debug logging
-            logger.info(f"Docker logs command: {' '.join(cmd)}")
-            logger.info(f"Return code: {proc.returncode}")
-            logger.info(f"Stdout length: {len(stdout.decode()) if stdout else 0}")
-            logger.info(f"Stderr: {stderr.decode() if stderr else 'None'}")
+            # Debug logging (reduced to prevent recursive logging)
+            logger.debug(f"Docker logs command: {' '.join(cmd)}")
+            logger.debug(f"Return code: {proc.returncode}")
+            if proc.returncode != 0:
+                logger.error(f"Docker logs failed: {stderr.decode() if stderr else 'Unknown error'}")
             
             logs = []
             # Docker logs can be written to both stdout and stderr, combine them
@@ -425,32 +425,101 @@ class DockerService:
                     
                 if timestamps and line:
                     # Docker timestamp format: 2025-09-06T03:10:58.890010636Z MESSAGE
-                    # Find the first space after the timestamp (which ends with Z)
-                    timestamp_end = line.find('Z ')
-                    if timestamp_end != -1:
-                        timestamp = line[:timestamp_end + 1]
-                        message = line[timestamp_end + 2:].strip()
+                    # Use regex to properly extract timestamp and message
+                    timestamp_match = re.match(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)\s*(.*)', line)
+                    if timestamp_match:
+                        timestamp = timestamp_match.group(1)
+                        message = timestamp_match.group(2).strip()
+                        
+                        # Skip entries with empty messages or messages that are just timestamps
+                        if not message or re.match(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s*$', message):
+                            continue
+                            
+                        # Skip messages that contain any timestamps (nested log entries)
+                        if re.search(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z', message):
+                            continue
+                            
+                        # Skip recursive log entries from this service itself
+                        if any(skip_pattern in message for skip_pattern in [
+                            'Docker logs command:',
+                            'Return code:',
+                            'Stdout length:',
+                            'Stderr:',
+                            'app.services.docker:',
+                            'app.services.log_streamer:',
+                            'app.api.endpoints.logs:',
+                            'INFO:app.',
+                            'ERROR:app.',
+                            'WARN:app.',
+                            'DEBUG:app.',
+                            'uvicorn',
+                            'GET /api/v1/logs'
+                        ]):
+                            continue
+                            
+                        # Skip messages that are only whitespace or control characters
+                        if not message.strip() or message.strip() == '':
+                            continue
+                            
+                        # Skip messages that look like they're just ANSI color codes
+                        clean_message = re.sub(r'\x1b\[[0-9;]*m', '', message).strip()
+                        if not clean_message:
+                            continue
                     else:
-                        # Fallback: treat entire line as message with current timestamp
+                        # If no timestamp pattern matches, treat entire line as message
                         timestamp = datetime.utcnow().isoformat() + 'Z'
                         message = line.strip()
+                        
+                        # Skip messages that contain any timestamps (nested log entries)
+                        if re.search(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z', message):
+                            continue
+                        
+                        # Skip recursive log entries
+                        if any(skip_pattern in message for skip_pattern in [
+                            'Docker logs command:',
+                            'Return code:',
+                            'Stdout length:',
+                            'Stderr:',
+                            'app.services.docker:',
+                            'app.services.log_streamer:',
+                            'app.api.endpoints.logs:',
+                            'INFO:app.',
+                            'ERROR:app.',
+                            'WARN:app.',
+                            'DEBUG:app.',
+                            'uvicorn',
+                            'GET /api/v1/logs'
+                        ]):
+                            continue
                     
-                    # Skip entries with empty messages
-                    if not message:
-                        continue
+                    # Extract log level from message if present
+                    level = 'INFO'  # Default level
+                    level_match = re.search(r'\b(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|CRITICAL)\b', message, re.IGNORECASE)
+                    if level_match:
+                        level = level_match.group(1).upper()
                         
                     logs.append({
                         'timestamp': timestamp,
                         'message': message,
-                        'level': 'INFO',  # Default level, can be enhanced with parsing
+                        'level': level,
                         'container_id': container_id
                     })
                 else:
                     # Handle lines without timestamps
+                    message = line.strip()
+                    if not message:  # Skip empty messages
+                        continue
+                        
+                    # Extract log level from message if present
+                    level = 'INFO'  # Default level
+                    level_match = re.search(r'\b(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|CRITICAL)\b', message, re.IGNORECASE)
+                    if level_match:
+                        level = level_match.group(1).upper()
+                        
                     logs.append({
                         'timestamp': datetime.utcnow().isoformat() + 'Z',
-                        'message': line.strip(),
-                        'level': 'INFO',
+                        'message': message,
+                        'level': level,
                         'container_id': container_id
                     })
             return logs

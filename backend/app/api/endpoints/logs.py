@@ -66,7 +66,11 @@ async def websocket_endpoint(websocket: WebSocket, container_id: str):
                     break
                 continue
             except Exception as e:
-                logger.error(f"Error in websocket loop: {e}")
+                # Check if it's a normal WebSocket close
+                if hasattr(e, 'code') and e.code == 1000:
+                    logger.info(f"WebSocket closed normally for container: {container_id}")
+                else:
+                    logger.error(f"Error in websocket loop: {e}")
                 break
 
     except WebSocketDisconnect:
@@ -101,9 +105,26 @@ async def websocket_stats_endpoint(websocket: WebSocket, container_id: str):
             "timestamp": datetime.utcnow().isoformat(),
         })
 
-        # Main stats streaming loop
+        # Main stats streaming loop with ping/pong support
         while True:
             try:
+                # Wait for incoming messages with timeout for ping/pong
+                try:
+                    message = await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
+                    # Handle client messages
+                    try:
+                        data = json.loads(message)
+                        if data.get("type") == "ping":
+                            await websocket.send_json({"type": "pong", "timestamp": datetime.utcnow().isoformat()})
+                        elif data.get("type") == "pong":
+                            # Acknowledge pong
+                            pass
+                    except json.JSONDecodeError:
+                        logger.warning(f"Invalid JSON received from stats client: {message}")
+                except asyncio.TimeoutError:
+                    # No message received, continue with stats sending
+                    pass
+                
                 # Get container stats from Docker service
                 stats = await docker_service.get_container_stats(container_id)
                 
@@ -134,15 +155,19 @@ async def websocket_stats_endpoint(websocket: WebSocket, container_id: str):
                 await asyncio.sleep(1.0)
                 
             except Exception as e:
-                logger.error(f"Error getting/sending stats for {container_id}: {e}")
+                # Check if it's a normal WebSocket close
+                if hasattr(e, 'code') and e.code == 1000:
+                    logger.info(f"Stats WebSocket closed normally for container: {container_id}")
+                else:
+                    logger.error(f"Error getting/sending stats for {container_id}: {e}")
                 break
-                
+
     except WebSocketDisconnect:
         logger.info(f"Stats WebSocket disconnected for container: {container_id}")
     except Exception as e:
         logger.error(f"Stats WebSocket error for container {container_id}: {e}")
     finally:
-        logger.info(f"Stats WebSocket cleanup completed for container: {container_id}")
+        logger.info(f"Stats WebSocket cleanup for container: {container_id}")
 
 
 @router.get("/containers")
@@ -164,18 +189,27 @@ async def list_containers():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/{container_id}", response_model=List[Dict[str, Any]])
-async def get_recent_logs(container_id: str, tail: int = 100, since: str = None, timestamps: bool = True):
+@router.get("/containers/{container_id}/logs", response_model=Dict[str, Any])
+async def get_container_logs(container_id: str, tail: int = 100, since: str = None, before: str = None, timestamps: bool = True):
     """Fetch recent logs from a container"""
     try:
         docker_service = get_docker_service()
-        logs = await docker_service.get_container_logs(
-            container_id,
-            tail=tail,
-            since=since,
-            timestamps=timestamps
-        )
-        return logs
+        # Handle pagination with before parameter
+        if before:
+            logs = await docker_service.get_container_logs(
+                container_id,
+                tail=tail,
+                until=before,
+                timestamps=timestamps
+            )
+        else:
+            logs = await docker_service.get_container_logs(
+                container_id,
+                tail=tail,
+                since=since,
+                timestamps=timestamps
+            )
+        return {"logs": logs}
     except Exception as e:
         logger.error(f"Error getting logs for container {container_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

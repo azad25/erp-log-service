@@ -25,11 +25,14 @@ export const getContainers = async (): Promise<ContainerInfo[]> => {
  * @param containerId The ID of the container to fetch logs for
  * @param limit Maximum number of log entries to return
  */
-export const getLogs = async (containerId: string, limit: number = 100): Promise<LogEntry[]> => {
+export const getLogs = async (containerId: string, limit: number = 100, before?: string): Promise<LogEntry[]> => {
   try {
-    const response = await fetch(
-      `${API_BASE_URL}/logs/${containerId}?tail=${limit}&timestamps=true`
-    );
+    let url = `${API_BASE_URL}/logs/containers/${containerId}/logs?tail=${limit}`;
+    if (before) {
+      url += `&before=${encodeURIComponent(before)}`;
+    }
+    
+    const response = await fetch(url);
     
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);

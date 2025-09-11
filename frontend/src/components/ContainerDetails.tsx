@@ -54,7 +54,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
       const containerLogs = await getLogs(container.id, 10);
       setLogs(containerLogs || []);
     } catch (error) {
-      console.error('Error loading container logs:', error);
+      // Silent error handling
     } finally {
       setLoading(false);
     }
@@ -65,20 +65,25 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
       loadContainerLogs();
       // Always start watching stats when modal opens, regardless of selection
       startWatching(container.id);
-      console.log('ContainerDetails: Started watching stats for', container.id);
-      
-      return () => {
-        stopWatching(container.id);
-        console.log('ContainerDetails: Stopped watching stats for', container.id);
-      };
     }
-  }, [container, show, loadContainerLogs, startWatching, stopWatching]);
+  }, [container, show, loadContainerLogs, startWatching]);
+
+  // Cleanup only on actual unmount - remove aggressive cleanup
+  useEffect(() => {
+    return () => {
+      if (container) {
+        // Remove setTimeout to prevent delayed disconnections
+        stopWatching(container.id);
+      }
+    };
+  }, [stopWatching]); // Remove container dependency to prevent cleanup on container changes
 
   // Update local stats when containerStats changes
   useEffect(() => {
     if (container && container.id && containerStats[container.id]) {
       const stats = containerStats[container.id];
-      console.log('ContainerDetails: Received stats for', container.id, stats);
+      console.log('ContainerDetails: Received stats update for', container.id, stats);
+      // Received stats update - values are already in MB from backend
       setStats({
         memoryUsage: Number(stats.memoryUsage) || 0,
         memoryLimit: Number(stats.memoryLimit) || 1,
@@ -89,7 +94,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
         pids: Number(stats.pids) || 0
       });
     } else if (container && container.id) {
-      console.log('ContainerDetails: No stats available for', container.id, 'Available containers:', Object.keys(containerStats));
+      console.log('ContainerDetails: No stats available yet for', container.id);
     }
   }, [container, containerStats]);
 
@@ -118,7 +123,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
       // Stats will update automatically via WebSocket
       
     } catch (error) {
-      console.error(`Error ${action}ing container:`, error);
+      // Silent error handling
     } finally {
       setLoading(false);
     }
@@ -175,7 +180,10 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
   if (!container) return null;
 
   const isRunning = container.status.toLowerCase().includes('up');
-  const memoryPercent = stats.memoryLimit > 0 ? (stats.memoryUsage / stats.memoryLimit) * 100 : 0;
+  // Use backend-provided memory percentage for accuracy
+  const memoryPercent = container && container.id && containerStats[container.id] 
+    ? containerStats[container.id].memoryPercent 
+    : (stats.memoryLimit > 0 ? (stats.memoryUsage / stats.memoryLimit) * 100 : 0);
 
   return (
     <>
@@ -293,7 +301,7 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
                   <div className="mb-3">
                     <div className="d-flex justify-content-between mb-1">
                       <small>Memory Usage</small>
-                      <small>{formatBytes(stats.memoryUsage * 1024 * 1024)} / {formatBytes(stats.memoryLimit * 1024 * 1024)}</small>
+                      <small>{formatBytes(stats.memoryUsage * 1024 * 1024)} / {formatBytes(stats.memoryLimit * 1024 * 1024)} ({memoryPercent.toFixed(1)}%)</small>
                     </div>
                     <ProgressBar 
                       now={memoryPercent} 
@@ -314,16 +322,37 @@ const ContainerDetails: React.FC<ContainerDetailsProps> = ({
                     />
                   </div>
                   
+                  <div className="mb-3">
+                    <div className="d-flex justify-content-between mb-1">
+                      <small>Disk I/O</small>
+                      <small>{formatBytes(stats.diskUsage * 1024 * 1024)} total</small>
+                    </div>
+                    <div className="row text-center">
+                      <div className="col-6">
+                        <div className="text-warning">
+                          <i className="bi bi-hdd"></i> {formatBytes((Number(containerStats[container?.id || '']?.blockRead) || 0) * 1024 * 1024)}
+                        </div>
+                        <small className="text-muted">Read</small>
+                      </div>
+                      <div className="col-6">
+                        <div className="text-info">
+                          <i className="bi bi-hdd-fill"></i> {formatBytes((Number(containerStats[container?.id || '']?.blockWrite) || 0) * 1024 * 1024)}
+                        </div>
+                        <small className="text-muted">Write</small>
+                      </div>
+                    </div>
+                  </div>
+                  
                   <div className="row text-center">
                     <div className="col-6">
                       <div className="text-success">
-                        <i className="bi bi-arrow-down"></i> {formatBytes(stats.networkRx)}
+                        <i className="bi bi-arrow-down"></i> {formatBytes(stats.networkRx * 1024 * 1024)}
                       </div>
                       <small className="text-muted">Network In</small>
                     </div>
                     <div className="col-6">
                       <div className="text-primary">
-                        <i className="bi bi-arrow-up"></i> {formatBytes(stats.networkTx)}
+                        <i className="bi bi-arrow-up"></i> {formatBytes(stats.networkTx * 1024 * 1024)}
                       </div>
                       <small className="text-muted">Network Out</small>
                     </div>

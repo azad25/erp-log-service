@@ -1,37 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { LogEntry } from '../types/logs';
 import { useWebSocket } from '../contexts/WebSocketContext';
-
-// Safe console that works in all environments
-const safeConsole = {
-  log: (...args: any[]) => {
-    try {
-      if (typeof console !== 'undefined' && console.log) {
-        console.log(...args);
-      }
-    } catch (e) {
-      // No-op
-    }
-  },
-  warn: (...args: any[]) => {
-    try {
-      if (typeof console !== 'undefined' && console.warn) {
-        console.warn(...args);
-      }
-    } catch (e) {
-      // No-op
-    }
-  },
-  error: (...args: any[]) => {
-    try {
-      if (typeof console !== 'undefined' && console.error) {
-        console.error(...args);
-      }
-    } catch (e) {
-      // No-op
-    }
-  }
-};
+import { getLogs } from '../services/api';
 
 export interface UseLogMessagesResult {
   logs: LogEntry[];
@@ -43,346 +13,210 @@ export interface UseLogMessagesResult {
   loadMoreLogs: () => Promise<void>;
   isLoadingMore: boolean;
   hasMoreLogs: boolean;
+  disconnect: (containerId: string) => void;
 }
 
-export const useLogMessages = (containerId: string, maxLogs: number = 1000): UseLogMessagesResult => {
-  // Configuration
-  const BATCH_SIZE = 50; // Number of logs to process in a single batch
-  const BATCH_INTERVAL = 100; // ms between batch updates
-
+export const useLogMessages = (containerId: string | null, maxLogs: number = 25): UseLogMessagesResult => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [isConnecting, setIsConnecting] = useState<boolean>(true);
-  const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
-  const [hasMoreLogs, setHasMoreLogs] = useState<boolean>(true);
-  const [error] = useState<Error | null>(null);
-  const { isConnected: wsIsConnected, connect, disconnect } = useWebSocket();
-  
-  // Refs for state that shouldn't trigger re-renders
+  const [error, setError] = useState<Error | null>(null);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMoreLogs, setHasMoreLogs] = useState(true);
+  const [isConnecting, setIsConnecting] = useState(false);
   const seenLogsRef = useRef<Set<string>>(new Set());
-  const pendingLogsRef = useRef<LogEntry[]>([]);
-  const updateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const currentContainerRef = useRef<string>(containerId);
-  const reconnectAttempts = useRef<Record<string, number>>({});
-  const isMountedRef = useRef<boolean>(true);
+  const isMountedRef = useRef(true);
+  
+  const { connect, disconnect, isConnected } = useWebSocket();
 
-  // Create a unique key for log entry to prevent duplicates
-  const createLogKey = useCallback((log: LogEntry): string => {
-    return `${log.timestamp}-${log.message}-${log.level}`;
-  }, []);
+  const createLogKey = (log: LogEntry): string => {
+    return `${log.container_id}-${log.timestamp}-${log.message}`;
+  };
 
-  // Process pending logs in batches to prevent UI freezes
-  const processPendingLogs = useCallback(() => {
-    if (!isMountedRef.current || pendingLogsRef.current.length === 0) {
+  const handleLogMessage = useCallback((log: LogEntry) => {
+    if (!isMountedRef.current) return;
+    
+    // Only add logs for the current container
+    if (containerId && log.container_id !== containerId) {
+      return;
+    }
+    
+    const logKey = createLogKey(log);
+    if (seenLogsRef.current.has(logKey)) {
+      return;
+    }
+    
+    seenLogsRef.current.add(logKey);
+    
+    setLogs(prevLogs => {
+      const newLogs = [...prevLogs, log];
+      // Sort by timestamp (oldest first)
+      newLogs.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+      // Keep only the most recent maxLogs
+      return newLogs.slice(-maxLogs);
+    });
+  }, [containerId, maxLogs]);
+
+  const fetchInitialLogs = useCallback(async () => {
+    if (!containerId || containerId === 'all') return;
+    
+    try {
+      setError(null);
+      const response = await getLogs(containerId, 25); // Initial load
+      
+      if (response && Array.isArray(response)) {
+        const validLogs = response.filter((log: any) => 
+          log && log.container_id && log.timestamp && log.message
+        );
+        
+        // Clear seen logs and add new ones
+        seenLogsRef.current.clear();
+        validLogs.forEach((log: LogEntry) => {
+          seenLogsRef.current.add(createLogKey(log));
+        });
+        
+        setLogs(validLogs);
+        setHasMoreLogs(validLogs.length === 25);
+      }
+    } catch (err) {
+      console.error('Error fetching initial logs:', err);
+      setError(err instanceof Error ? err : new Error('Failed to fetch logs'));
+    }
+  }, [containerId]);
+
+  const loadMoreLogs = useCallback(async () => {
+    if (!containerId || containerId === 'all' || isLoadingMore || !hasMoreLogs) {
       return;
     }
 
-    // Process logs in smaller batches
-    const batch = pendingLogsRef.current.splice(0, BATCH_SIZE);
-    
-    setLogs(prevLogs => {
-      const newLogs = [...prevLogs, ...batch];
-      
-      // Trim logs to maxLogs if needed
-      return newLogs.length > maxLogs 
-        ? newLogs.slice(-maxLogs)
-        : newLogs;
-    });
-
-    // Schedule next batch if there are more logs to process
-    if (pendingLogsRef.current.length > 0) {
-      updateTimeoutRef.current = setTimeout(processPendingLogs, BATCH_INTERVAL);
-    } else {
-      updateTimeoutRef.current = null;
-    }
-  }, [maxLogs]);
-
-  // Handle incoming log messages with throttling and duplicate prevention
-  const handleLogMessage = useCallback((log: LogEntry) => {
-    try {
-      // Validate log entry
-      if (!log || typeof log !== 'object' || !log.timestamp || !log.message) {
-        safeConsole.warn('Received invalid log entry:', log);
-        return;
-      }
-
-      // Ensure message is a string and all required fields are present
-      const sanitizedLog = {
-        ...log,
-        message: String(log.message || log.raw || ''),
-        timestamp: new Date(log.timestamp).toISOString(),
-        level: log.level || 'info',
-        container: log.container || log.containerId || containerId,
-        containerId: log.containerId || log.container_id || containerId,
-        raw: log.raw || log.message || ''
-      };
-
-      const logKey = createLogKey(sanitizedLog);
-      
-      // Prevent duplicate logs
-      if (seenLogsRef.current.has(logKey)) {
-        safeConsole.log('Skipping duplicate log:', logKey);
-        return;
-      }
-      
-      seenLogsRef.current.add(logKey);
-      pendingLogsRef.current.push(sanitizedLog);
-
-      safeConsole.log(`Added log to pending queue for ${containerId}:`, sanitizedLog.message);
-
-      // Start processing logs if not already in progress
-      if (!updateTimeoutRef.current) {
-        updateTimeoutRef.current = setTimeout(processPendingLogs, BATCH_INTERVAL);
-      }
-    } catch (error) {
-      safeConsole.error('Error processing log message:', error, log);
-    }
-  }, [createLogKey, processPendingLogs, containerId]);
-
-  // Load initial logs via HTTP API - limit to 20 logs
-  const loadInitialLogs = useCallback(async (containerId: string) => {
-    try {
-      const apiBaseUrl = process.env.REACT_APP_API_URL || 'http://localhost:3004/api/v1';
-      const response = await fetch(`${apiBaseUrl}/logs/${containerId}?tail=20&timestamps=true`);
-      if (response.ok) {
-        const initialLogs = await response.json();
-        if (Array.isArray(initialLogs) && initialLogs.length > 0) {
-          safeConsole.log(`Loaded ${initialLogs.length} initial logs for ${containerId}`);
-          
-          // Clear existing logs first to avoid duplicates
-          setLogs([]);
-          seenLogsRef.current.clear();
-          pendingLogsRef.current = [];
-          
-          // Process initial logs directly without going through handleLogMessage to avoid duplicates
-          const processedLogs = initialLogs.map(log => ({
-            ...log,
-            message: String(log.message || log.raw || ''),
-            timestamp: new Date(log.timestamp).toISOString(),
-            level: log.level || 'info',
-            container: log.container || log.containerId || containerId,
-            containerId: log.containerId || log.container_id || containerId,
-            raw: log.raw || log.message || ''
-          }));
-          
-          // Add to seen logs to prevent duplicates
-          processedLogs.forEach(log => {
-            const logKey = createLogKey(log);
-            seenLogsRef.current.add(logKey);
-          });
-          
-          // Set logs directly
-          setLogs(processedLogs.slice(-20)); // Ensure we only keep last 20
-        }
-      } else {
-        safeConsole.error(`Failed to load initial logs: ${response.status} ${response.statusText}`);
-      }
-    } catch (error) {
-      safeConsole.error('Error loading initial logs:', error);
-    }
-  }, [createLogKey]);
-
-  // Load more historical logs
-  const loadMoreLogs = useCallback(async () => {
-    if (!containerId || isLoadingMore || !hasMoreLogs) return;
-    
     try {
       setIsLoadingMore(true);
-      const apiBaseUrl = process.env.REACT_APP_API_URL || 'http://localhost:3004/api/v1';
+      setError(null);
       
-      // Calculate the number of logs to fetch (current count + 20 more)
-      const currentCount = logs.length;
-      const fetchCount = currentCount + 20;
+      // Get the oldest log timestamp for pagination
+      const sortedLogs = [...logs].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+      const oldestLog = sortedLogs.length > 0 ? sortedLogs[0] : null;
+      const beforeTimestamp = oldestLog ? oldestLog.timestamp : undefined;
       
-      const response = await fetch(`${apiBaseUrl}/logs/${containerId}?tail=${fetchCount}&timestamps=true`);
-      if (response.ok) {
-        const moreLogs = await response.json();
-        if (Array.isArray(moreLogs) && moreLogs.length > currentCount) {
-          safeConsole.log(`Loaded ${moreLogs.length - currentCount} more logs for ${containerId}`);
-          
-          // Process the new logs
-          const processedLogs = moreLogs.map(log => ({
-            ...log,
-            message: String(log.message || log.raw || ''),
-            timestamp: new Date(log.timestamp).toISOString(),
-            level: log.level || 'info',
-            container: log.container || log.containerId || containerId,
-            containerId: log.containerId || log.container_id || containerId,
-            raw: log.raw || log.message || ''
-          }));
-          
-          // Add new logs to seen logs to prevent duplicates
-          processedLogs.forEach(log => {
-            const logKey = createLogKey(log);
-            seenLogsRef.current.add(logKey);
-          });
-          
-          // Update logs with the new ones, respecting maxLogs limit
+      console.log('Loading more logs before:', beforeTimestamp, 'Current logs count:', logs.length);
+      
+      const response = await getLogs(containerId, 25, beforeTimestamp);
+      
+      if (response && Array.isArray(response)) {
+        const validLogs = response.filter((log: any) => 
+          log && log.container_id && log.timestamp && log.message
+        );
+        
+        console.log('Received', validLogs.length, 'older logs');
+        
+        // Filter out logs we've already seen
+        const newLogs = validLogs.filter((log: LogEntry) => {
+          const logKey = createLogKey(log);
+          return !seenLogsRef.current.has(logKey);
+        });
+        
+        console.log('New unique logs:', newLogs.length);
+        
+        // Add new logs to seen set
+        newLogs.forEach((log: LogEntry) => {
+          seenLogsRef.current.add(createLogKey(log));
+        });
+        
+        if (newLogs.length > 0) {
           setLogs(prevLogs => {
-            const combinedLogs = [...prevLogs, ...processedLogs.slice(currentCount)];
-            return combinedLogs.length > maxLogs 
-              ? combinedLogs.slice(-maxLogs)
-              : combinedLogs;
+            // Prepend older logs to the beginning
+            const allLogs = [...newLogs, ...prevLogs];
+            // Sort by timestamp (oldest first)
+            allLogs.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+            // Keep reasonable number of logs in memory
+            return allLogs.slice(-(maxLogs * 4)); // Allow more history for Load More
           });
-          
-          // Check if we have more logs available
-          if (moreLogs.length < fetchCount) {
-            setHasMoreLogs(false);
-          }
-        } else {
-          setHasMoreLogs(false);
         }
+        
+        // If we got fewer logs than requested, we've reached the end
+        setHasMoreLogs(validLogs.length === 25 && newLogs.length > 0);
       } else {
-        safeConsole.error(`Failed to load more logs: ${response.status} ${response.statusText}`);
         setHasMoreLogs(false);
       }
-    } catch (error) {
-      safeConsole.error('Error loading more logs:', error);
-      setHasMoreLogs(false);
+    } catch (err) {
+      console.error('Error loading more logs:', err);
+      setError(err instanceof Error ? err : new Error('Failed to load more logs'));
     } finally {
       setIsLoadingMore(false);
     }
-  }, [containerId, isLoadingMore, hasMoreLogs, logs.length, createLogKey]);
+  }, [containerId, isLoadingMore, hasMoreLogs, logs, maxLogs]);
 
-  // WebSocket connection and message handling - prevent duplicate connections
-  useEffect(() => {
-    if (!containerId) return undefined;
-    
-    // Prevent duplicate connections in React StrictMode
-    if (currentContainerRef.current === containerId && wsIsConnected(containerId)) {
-      return undefined;
-    }
-    
-    // Reset logs and state when container changes
-    if (currentContainerRef.current !== containerId) {
-      setLogs([]);
-      seenLogsRef.current.clear();
-      pendingLogsRef.current = [];
-      setHasMoreLogs(true);
-      setIsLoadingMore(false);
-    }
-    
-    // Mark component as mounted
-    isMountedRef.current = true;
-    currentContainerRef.current = containerId;
-    setIsConnecting(true);
-
-    // Debounce connection to prevent React StrictMode double execution
-    const connectionTimer = setTimeout(() => {
-      if (isMountedRef.current && !wsIsConnected(containerId)) {
-        // Load initial logs first
-        loadInitialLogs(containerId);
-        // Connect using the WebSocket context
-        connect(containerId);
-      }
-    }, 100); // Small delay to prevent duplicate connections
-
-    // Listen for WebSocket message events
-    const handleMessage = (event: CustomEvent<{ log: LogEntry; containerId: string }>) => {
-      if (event.detail.containerId === containerId && isMountedRef.current) {
-        handleLogMessage(event.detail.log);
-      }
-    };
-
-    // Update connection status
-    const updateConnectionStatus = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail?.containerId === containerId && isMountedRef.current) {
-        const isConnected = detail.connected === true;
-        setIsConnecting(!isConnected);
-        
-        // Reset reconnect attempts on successful connection
-        if (isConnected) {
-          reconnectAttempts.current[containerId] = 0;
-        }
-      }
-    };
-
-    // Set up connection status listener
-    const connectionListener = (e: Event) => updateConnectionStatus(e);
-    window.addEventListener('websocket_status', connectionListener);
-    window.addEventListener('logMessage', handleMessage as EventListener);
-    
-    // Initial connection status check
-    const isConnected = wsIsConnected(containerId);
-    setIsConnecting(!isConnected);
-
-    // Set up periodic connection health check
-    const healthCheckInterval = setInterval(() => {
-      if (!wsIsConnected(containerId) && !reconnectTimeoutRef.current) {
-        safeConsole.log(`Connection lost for ${containerId}, attempting to reconnect...`);
-        connect(containerId);
-      }
-    }, 10000); // Check every 10 seconds
-
-    // Cleanup function
-    return () => {
-      isMountedRef.current = false;
-      
-      // Clear connection timer
-      clearTimeout(connectionTimer);
-      
-      // Clear any pending timeouts
-      if (updateTimeoutRef.current) {
-        clearTimeout(updateTimeoutRef.current);
-        updateTimeoutRef.current = null;
-      }
-      
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
-      
-      // Clear interval
-      clearInterval(healthCheckInterval);
-      
-      // Clear event listeners
-      window.removeEventListener('websocket_status', connectionListener);
-      window.removeEventListener('logMessage', handleMessage as EventListener);
-      
-      // Disconnect WebSocket
-      disconnect(containerId);
-    };
-  }, [containerId, connect, disconnect, wsIsConnected, handleLogMessage, loadInitialLogs]);
-
-  // Cleanup function to be called by parent component
   const cleanup = useCallback(() => {
     isMountedRef.current = false;
-    
-    // Clear any pending timeouts
-    if (updateTimeoutRef.current) {
-      clearTimeout(updateTimeoutRef.current);
-      updateTimeoutRef.current = null;
-    }
-    
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-    
-    // Clear large data structures
-    seenLogsRef.current.clear();
-    pendingLogsRef.current = [];
-    
-    // Disconnect WebSocket
-    if (containerId) {
-      disconnect(containerId);
-    }
-    
-    // Reset state
     setLogs([]);
+    seenLogsRef.current.clear();
+    setError(null);
+    setHasMoreLogs(true);
+    setIsLoadingMore(false);
     setIsConnecting(false);
-  }, [containerId, disconnect]);
+  }, []);
+
+  // Main effect for container changes
+  useEffect(() => {
+    if (!containerId || containerId === 'all') return;
+
+    isMountedRef.current = true;
+    setIsConnecting(true);
+
+    // Clear previous data when container changes
+    setLogs([]);
+    seenLogsRef.current.clear();
+    setHasMoreLogs(true);
+    setIsLoadingMore(false);
+
+    // Fetch initial logs first, then connect WebSocket
+    fetchInitialLogs().then(() => {
+      if (isMountedRef.current) {
+        connect(containerId);
+        setIsConnecting(false);
+      }
+    });
+
+    return () => {
+      // Only disconnect when container actually changes, not on every re-render
+      if (containerId && containerId !== 'all') {
+        // Remove setTimeout to prevent delayed disconnections
+        disconnect(containerId);
+      }
+    };
+  }, [containerId, connect, disconnect, fetchInitialLogs]);
+
+  // Listen for real-time log messages
+  useEffect(() => {
+    const handleLogEvent = (event: CustomEvent) => {
+      const { log, containerId: logContainerId } = event.detail;
+      if (logContainerId === containerId && isMountedRef.current) {
+        handleLogMessage(log);
+      }
+    };
+
+    window.addEventListener('logMessage', handleLogEvent as EventListener);
+    
+    return () => {
+      window.removeEventListener('logMessage', handleLogEvent as EventListener);
+    };
+  }, [containerId, handleLogMessage]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   return {
     logs,
     cleanup,
-    isConnected: wsIsConnected(currentContainerRef.current),
+    isConnected: containerId ? isConnected(containerId) : false,
     isConnecting,
     handleLogMessage,
     error,
     loadMoreLogs,
     isLoadingMore,
-    hasMoreLogs
+    hasMoreLogs,
+    disconnect,
   };
 };
