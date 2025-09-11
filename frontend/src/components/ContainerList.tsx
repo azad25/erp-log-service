@@ -118,20 +118,38 @@ const ContainerList: React.FC<ContainerListProps> = ({
                 onClick={(e) => handleContainerClick(container, e)}
                 style={{ cursor: 'pointer' }}
               >
-                <div className="d-flex w-100 justify-content-between align-items-center">
-                  <div className="flex-grow-1">
-                    <h6 className="mb-1 d-flex align-items-center">
-                      <i className={`bi ${isRunning ? 'bi-play-circle text-success' : 'bi-stop-circle text-danger'} me-2`}></i>
-                      <span className="text-truncate" style={{ color: '#3498db' }}>
+                <div className="d-flex w-100 justify-content-between align-items-start">
+                  <div className="flex-grow-1 me-2" style={{ minWidth: 0 }}>
+                    <div className="d-flex align-items-center mb-1">
+                      <i className={`bi ${isRunning ? 'bi-play-circle text-success' : 'bi-stop-circle text-danger'} me-2 flex-shrink-0`}></i>
+                      <span className="text-truncate d-block" style={{ color: '#3498db' }}>
                         {container.name ? container.name.replace('erp-suite-', '') : 'Unnamed'}
                       </span>
-                    </h6>
-                    <p className="mb-0 small text-truncate fw-bold text-uppercase" style={{ color: 'white', fontSize: '0.7rem', letterSpacing: '0.5px' }}>{container.image}</p>
+                    </div>
+                    <p className="mb-0 small text-truncate text-uppercase" style={{ 
+                      color: 'white', 
+                      fontSize: '0.7rem', 
+                      letterSpacing: '0.5px',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      maxWidth: '100%'
+                    }}>
+                      {container.image}
+                    </p>
                   </div>
-                  <div className="text-end d-flex align-items-center gap-2">
+                  <div className="d-flex align-items-center gap-2 flex-shrink-0">
                     <button
-                      className="btn btn-outline-danger btn-sm info-btn"
-                      style={{ borderColor: '#dc3545', color: '#dc3545' }}
+                      className="btn btn-outline-danger btn-sm info-btn p-1"
+                      style={{ 
+                        borderColor: '#dc3545', 
+                        color: '#dc3545',
+                        width: '24px',
+                        height: '24px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedContainerDetails(container);
@@ -139,9 +157,9 @@ const ContainerList: React.FC<ContainerListProps> = ({
                       }}
                       title="Container Details"
                     >
-                      <i className="bi bi-info-circle"></i>
+                      <i className="bi bi-info-circle" style={{ fontSize: '0.8rem' }}></i>
                     </button>
-                    <small className={`badge ${statusBadge.class}`}>
+                    <small className={`badge ${statusBadge.class} text-nowrap`}>
                       <i className={`bi ${statusBadge.icon} me-1`}></i>
                       {statusBadge.text}
                     </small>

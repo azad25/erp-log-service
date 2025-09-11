@@ -11,6 +11,9 @@ Real-time Docker container log monitoring service for the ERP Suite.
 - Responsive web interface
 - Categorized container view (Application Services, Infrastructure)
 
+![alt text](preview-1.png)
+![alt text](preview-2.png)
+
 ## Architecture
 
 - **Frontend**: React/TypeScript web interface (port 3004)
