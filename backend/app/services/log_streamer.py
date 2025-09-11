@@ -5,7 +5,7 @@ import re
 import time
 from typing import Dict, List, Optional, Set, Any
 from fastapi import WebSocket
-from .docker import get_docker_service
+from .docker import DockerService, get_docker_service
 from datetime import datetime, timedelta, timezone
 import weakref
 from collections import deque
@@ -19,8 +19,11 @@ class LogStreamer:
     """Stream logs from Docker containers via LogProcessor and WebSocket with batching, rate-limiting and health checks"""
 
     def __init__(self):
+        # Docker service integration
+        self._docker_service = DockerService()
+
         # Processor (do NOT start here — call start() in async context)
-        self.processor = LogProcessor()
+        self.processor = LogProcessor(docker_service=self._docker_service)
 
         # Task management
         self.active_tasks: Dict[str, asyncio.Task] = {}

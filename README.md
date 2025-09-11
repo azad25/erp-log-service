@@ -37,44 +37,87 @@ This document provides an overview of the ERP Log Service codebase, its architec
 
 ```
 erp-log-service/
-├── backend/
-│   ├── main.py                # FastAPI app entry point with WebSocket endpoints
-│   ├── requirements.txt        # Python dependencies
+├── backend/                     # Backend FastAPI service
+│   ├── main.py                  # FastAPI application entry point
+│   ├── requirements.txt         # Python dependencies
+│   ├── .env.example            # Example environment variables
 │   └── app/
-│       ├── api/
+│       ├── api/                # API endpoints and WebSocket handlers
 │       │   ├── __init__.py
-│       │   └── endpoints/
-│       │       ├── logs.py    # API & WebSocket endpoints for logs
-│       │       └── stats.py   # WebSocket endpoints for container stats
-│       ├── core/
-│       │   ├── config.py      # App configuration (env, port, etc.)
-│       │   ├── dependencies.py # Dependency injection
-│       │   └── connection_manager.py # WebSocket connection management
-│       ├── services/
-│       │   ├── log_processor.py  # Log parsing/formatting logic
-│       │   ├── log_streamer.py   # WebSocket log streaming logic
-│       │   └── docker.py         # Docker service interactions
+│       │   ├── endpoints/
+│       │   │   ├── __init__.py
+│       │   │   ├── logs.py     # Log-related endpoints
+│       │   │   ├── stats.py    # Container statistics endpoints
+│       │   │   └── health.py   # Health check endpoints
+│       │   └── dependencies.py # API dependencies
+│       │
+│       ├── core/               # Core application components
+│       │   ├── __init__.py
+│       │   ├── config.py       # Application configuration
+│       │   ├── connection_manager.py  # WebSocket connection management
+│       │   └── logging_config.py      # Logging configuration
+│       │
+│       ├── models/             # Database models (if any)
+│       │   └── __init__.py
+│       │
+│       ├── services/           # Business logic services
+│       │   ├── __init__.py
+│       │   ├── docker.py       # Docker container interactions
+│       │   ├── log_processor.py # Log processing utilities
+│       │   ├── log_streamer.py  # Real-time log streaming
+│       │   └── stats_service.py # Container statistics collection
+│       │
+│       ├── utils/              # Utility functions
+│       │   └── __init__.py
+│       │
 │       └── __init__.py
-├── frontend/
-│   ├── package.json           # React dependencies
+│
+├── frontend/                   # React frontend application
+│   ├── public/                 # Static assets
 │   ├── src/
-│   │   ├── components/
-│   │   │   ├── ContainerList.tsx # Container list UI
-│   │   │   ├── ContainerDetails.tsx # Container stats and details
-│   │   │   ├── LogsModal.tsx     # Modal for viewing logs
-│   │   │   └── ConnectionStatus.tsx # WebSocket connection status
-│   │   ├── contexts/
-│   │   │   └── ContainerStatsContext.tsx # Stats context provider
-│   │   ├── services/
-│   │   │   ├── api.ts         # API service
-│   │   │   ├── containerService.ts # Container management
-│   │   │   └── websocketService.ts # WebSocket service
-│   │   └── App.tsx            # Main React app
-│   └── public/                # Static assets
-├── docker-compose.yml         # Docker Compose for development
+│   │   ├── components/         # React components
+│   │   │   ├── common/         # Reusable UI components
+│   │   │   ├── containers/     # Container components
+│   │   │   ├── layout/         # Layout components
+│   │   │   └── modals/         # Modal dialogs
+│   │   │
+│   │   ├── contexts/           # React contexts
+│   │   │   ├── ContainerStatsContext.tsx
+│   │   │   └── WebSocketContext.tsx
+│   │   │
+│   │   ├── hooks/              # Custom React hooks
+│   │   │   ├── useContainerStats.ts
+│   │   │   └── useLogMessages.ts
+│   │   │
+│   │   ├── services/           # API and service layer
+│   │   │   ├── api.ts
+│   │   │   ├── containerService.ts
+│   │   │   └── websocketService.ts
+│   │   │
+│   │   ├── types/              # TypeScript type definitions
+│   │   ├── utils/              # Utility functions
+│   │   ├── App.tsx             # Root component
+│   │   └── index.tsx           # Application entry point
+│   │
+│   ├── .env.example           # Example frontend environment variables
+│   ├── package.json           # NPM dependencies
+│   └── tsconfig.json          # TypeScript configuration
+│
+├── tests/                      # Test files
+│   ├── unit/                  # Unit tests
+│   └── integration/           # Integration tests
+│
+├── docker/                     # Docker-related files
+│   ├── nginx/                 # Nginx configuration
+│   └── scripts/               # Utility scripts
+│
+├── .dockerignore              # Files to exclude from Docker builds
+├── .gitignore                 # Git ignore rules
+├── docker-compose.yml         # Development Docker Compose file
+├── docker-compose.prod.yml    # Production Docker Compose file
+├── Dockerfile                 # Production Dockerfile
 ├── Dockerfile.dev             # Development Dockerfile
-├── README.md                  # Project overview
-└── CODEBASE_DOCUMENTATION.md  # This document
+└── README.md                  # This file
 ```
 
 ---

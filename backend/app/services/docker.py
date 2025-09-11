@@ -7,13 +7,15 @@ import asyncio
 import logging
 import json
 import re
+import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from .log_processor import LogProcessor
 from docker.models.containers import Container
 from docker.errors import DockerException
 from functools import lru_cache
 from dataclasses import dataclass
+from typing import Union, Optional, AsyncGenerator
+
 
 logger = logging.getLogger(__name__)
 
