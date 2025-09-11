@@ -16,6 +16,7 @@ import shlex
 import sys
 import inspect
 import random
+from .docker import get_docker_service
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -59,8 +60,7 @@ class LogProcessor:
                  cache_ttl: float = 300.0,
                  enable_multiline: bool = True,
                  buffer_size: int = 1000,
-                 queue_size: int = 10000,
-                 docker_service: Any = None):
+                 queue_size: int = 10000):
         self.max_workers = max_workers
         self.cache_ttl = cache_ttl
         self.enable_multiline = enable_multiline
@@ -71,7 +71,7 @@ class LogProcessor:
         self._line_buffer: Dict[str, List[str]] = {}
         
         # Docker service integration
-        self._docker_service = docker_service
+        self._docker_service = get_docker_service()
 
         # Docker CLI configuration
         self.use_cli = True
@@ -92,7 +92,7 @@ class LogProcessor:
     async def verify_docker_availability(self) -> bool:
         """Verify Docker availability using Docker service."""
         try:
-            docker_service = self._docker_service
+            docker_service = get_docker_service()
             current_time = time.time()
             
             # Return cached result if still valid (less than 5 minutes old)
@@ -253,7 +253,7 @@ class LogProcessor:
     async def get_containers(self) -> List[Dict[str, Any]]:
         """Get list of all containers using Docker service."""
         try:
-            docker_service = self._docker_service
+            docker_service = get_docker_service()
             if not await docker_service.verify_connection():
                 logger.error("Docker service is not available")
                 return []
