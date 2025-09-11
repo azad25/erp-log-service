@@ -9,11 +9,14 @@ import json
 import re
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from .log_processor import LogProcessor
+# from .log_processor import LogProcessor # Remove this line
 from docker.models.containers import Container
 from docker.errors import DockerException
 from functools import lru_cache
 from dataclasses import dataclass
+from typing import Union, Optional, AsyncGenerator
+
+import time
 
 logger = logging.getLogger(__name__)
 

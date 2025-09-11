@@ -11,7 +11,7 @@ nginx -g "daemon off;" &
 cd /app && python backend/main.py --host 0.0.0.0 --port 8093 &
 
 # Start React frontend development server on port 3004
-cd /app/frontend && PORT=3004 npm start &
+cd /app/frontend && npm install && PORT=3004 npm start &
 
 # Wait for any process to exit
 wait -n
