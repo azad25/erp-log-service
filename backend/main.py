@@ -105,14 +105,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS middleware with optimized settings
+# Configure CORS middleware with optimized settings for network access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=["*"],  # Allow all origins for network access
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["*"]
+    expose_headers=["*"],
+    max_age=3600  # Cache preflight requests for 1 hour
 )
 
 # Simplified middleware for WebSocket support
@@ -296,7 +297,7 @@ if __name__ == "__main__":
     logger.info(f"Host: {host}, Port: {port}, Log Level: {log_level.upper()}")
     logger.info(f"Reload: {reload}, Workers: 1 (required for WebSocket)")
     
-    # Run the application
+    # Run the application with WebSocket-friendly timeouts
     uvicorn.run(
         "main:app",
         host=host,
@@ -306,5 +307,8 @@ if __name__ == "__main__":
         workers=1,  # Required for WebSocket support
         access_log=True,
         use_colors=True,
-        loop="asyncio"  # Explicitly use asyncio loop
+        loop="asyncio",  # Explicitly use asyncio loop
+        ws_ping_interval=45.0,  # Send WebSocket ping every 45 seconds
+        ws_ping_timeout=60.0,  # Wait 60 seconds for pong response
+        timeout_keep_alive=75  # Keep HTTP connections alive for 75 seconds
     )

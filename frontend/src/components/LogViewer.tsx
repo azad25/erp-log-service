@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useLogMessages } from '../hooks/useLogMessages';
-import { Button, Spinner } from 'react-bootstrap';
+import { Button, Spinner, OverlayTrigger, Tooltip } from 'react-bootstrap';
 
 interface LogViewerProps {
   selectedContainer: string;
@@ -135,6 +135,45 @@ const LogViewer: React.FC<LogViewerProps> = ({
     const levels = new Set(logs.map(log => log.level?.toLowerCase()).filter(Boolean));
     return Array.from(levels).sort();
   }, [logs]);
+
+  // Copy log to clipboard
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  
+  const copyToClipboard = useCallback(async (text: string, index: number) => {
+    try {
+      // Try modern clipboard API first
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        setCopiedIndex(index);
+        setTimeout(() => setCopiedIndex(null), 2000);
+      } else {
+        // Fallback for non-secure contexts (HTTP)
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        textArea.style.top = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        
+        try {
+          const successful = document.execCommand('copy');
+          if (successful) {
+            setCopiedIndex(index);
+            setTimeout(() => setCopiedIndex(null), 2000);
+          } else {
+            throw new Error('Copy command failed');
+          }
+        } finally {
+          document.body.removeChild(textArea);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to copy:', err);
+      alert('Failed to copy to clipboard. Please copy manually.');
+    }
+  }, []);
 
   if (isLoading && logs.length === 0) {
     return (
@@ -300,11 +339,12 @@ const LogViewer: React.FC<LogViewerProps> = ({
             {filteredLogs.map((log, index) => {
               const isError = log.level?.toLowerCase() === 'error' || log.level?.toLowerCase() === 'fatal';
               const isWarning = log.level?.toLowerCase() === 'warn' || log.level?.toLowerCase() === 'warning';
+              const logText = `[${formatTimestamp(log.timestamp)}] [${formatLogLevel(log.level)}] ${log.message || log.raw}`;
               
               return (
                 <div
                   key={`${log.timestamp}-${index}`}
-                  className={`log-entry p-2 mb-2 rounded border-start border-3 ${
+                  className={`log-entry p-2 mb-2 rounded border-start border-3 position-relative ${
                     isError 
                       ? 'bg-danger bg-opacity-10 border-danger' 
                       : isWarning 
@@ -344,6 +384,28 @@ const LogViewer: React.FC<LogViewerProps> = ({
                     <span className="text-light flex-grow-1">
                       {log.message || log.raw}
                     </span>
+                    <OverlayTrigger
+                      placement="top"
+                      overlay={
+                        <Tooltip id={`tooltip-${index}`}>
+                          {copiedIndex === index ? 'Copied!' : 'Copy to clipboard'}
+                        </Tooltip>
+                      }
+                    >
+                      <button
+                        className="btn btn-sm btn-link text-muted p-0 ms-2 flex-shrink-0"
+                        onClick={() => copyToClipboard(logText, index)}
+                        style={{ 
+                          fontSize: '0.85rem',
+                          opacity: 0.6,
+                          transition: 'opacity 0.2s'
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.opacity = '1'}
+                        onMouseLeave={(e) => e.currentTarget.style.opacity = '0.6'}
+                      >
+                        <i className={copiedIndex === index ? 'bi bi-check2' : 'bi bi-clipboard'}></i>
+                      </button>
+                    </OverlayTrigger>
                   </div>
                 </div>
               );

@@ -18,13 +18,18 @@ logger = logging.getLogger(__name__)
 async def websocket_endpoint(websocket: WebSocket, container_id: str):
     """
     WebSocket endpoint for streaming real-time logs from a container.
+    Supports connections from any network location.
     """
     log_streamer = get_log_streamer()
+    
+    # Log connection details for debugging network issues
+    client_host = websocket.client.host if websocket.client else "unknown"
+    logger.info(f"WebSocket connection request from {client_host} for container: {container_id}")
 
     try:
         # Accept WebSocket connection
         await websocket.accept()
-        logger.info(f"WebSocket connection accepted for container: {container_id}")
+        logger.info(f"WebSocket connection accepted from {client_host} for container: {container_id}")
         
         # Send initial connection confirmation
         await websocket.send_json({
@@ -41,36 +46,59 @@ async def websocket_endpoint(websocket: WebSocket, container_id: str):
         logger.info(f"Started real-time streaming for container: {container_id}")
 
         # Keep connection alive and handle incoming messages
+        # Use longer timeout for network connections
+        ping_interval = 45.0  # Send ping every 45 seconds
+        last_ping_time = time.time()
+        
         while True:
             try:
-                # Wait for incoming messages with timeout
-                message = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                # Calculate remaining time until next ping
+                time_since_ping = time.time() - last_ping_time
+                timeout_remaining = max(1.0, ping_interval - time_since_ping)
+                
+                # Wait for incoming messages with dynamic timeout
+                message = await asyncio.wait_for(
+                    websocket.receive_text(), 
+                    timeout=timeout_remaining
+                )
                 
                 # Handle client messages
                 try:
                     data = json.loads(message)
                     if data.get("type") == "ping":
-                        await websocket.send_json({"type": "pong", "timestamp": datetime.utcnow().isoformat()})
+                        await websocket.send_json({
+                            "type": "pong", 
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                        logger.debug(f"Responded to ping from client for container: {container_id}")
                     elif data.get("type") == "pong":
-                        # Acknowledge pong
-                        pass
+                        # Client acknowledged our ping
+                        logger.debug(f"Received pong from client for container: {container_id}")
                 except json.JSONDecodeError:
                     logger.warning(f"Invalid JSON received: {message}")
                 
             except asyncio.TimeoutError:
                 # Send ping to keep connection alive
                 try:
-                    await websocket.send_json({"type": "ping", "timestamp": datetime.utcnow().isoformat()})
+                    await websocket.send_json({
+                        "type": "ping", 
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    last_ping_time = time.time()
+                    logger.debug(f"Sent ping to client for container: {container_id}")
                 except Exception as ping_error:
-                    logger.warning(f"Failed to send ping: {ping_error}")
+                    logger.error(f"Failed to send ping to {client_host}: {ping_error}")
                     break
                 continue
+            except WebSocketDisconnect:
+                logger.info(f"WebSocket disconnected by client from {client_host} for container: {container_id}")
+                break
             except Exception as e:
                 # Check if it's a normal WebSocket close
                 if hasattr(e, 'code') and e.code == 1000:
-                    logger.info(f"WebSocket closed normally for container: {container_id}")
+                    logger.info(f"WebSocket closed normally from {client_host} for container: {container_id}")
                 else:
-                    logger.error(f"Error in websocket loop: {e}")
+                    logger.error(f"Error in websocket loop from {client_host}: {e}")
                 break
 
     except WebSocketDisconnect:

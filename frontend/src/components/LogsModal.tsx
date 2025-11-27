@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Modal, Button, Badge, Row, Col, Form, InputGroup, Spinner, Alert } from 'react-bootstrap';
+import { Modal, Button, Badge, Row, Col, Form, InputGroup, Spinner, Alert, OverlayTrigger, Tooltip } from 'react-bootstrap';
 import { FaCircle, FaSearch, FaSync, FaExclamationTriangle } from 'react-icons/fa';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
@@ -30,6 +30,7 @@ const LogsModal: React.FC<LogsModalProps> = ({
   const [levelFilter, setLevelFilter] = useState('all');
   const [autoScroll, setAutoScroll] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(new Date());
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const logsContainerRef = useRef<HTMLDivElement>(null);
 
@@ -148,6 +149,45 @@ const LogsModal: React.FC<LogsModalProps> = ({
     }
   };
 
+  // Copy log to clipboard
+  const copyToClipboard = useCallback(async (text: string, index: number) => {
+    try {
+      // Try modern clipboard API first
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        setCopiedIndex(index);
+        toast.success('Log copied to clipboard!', { autoClose: 1500 });
+        setTimeout(() => setCopiedIndex(null), 2000);
+      } else {
+        // Fallback for non-secure contexts (HTTP)
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        textArea.style.top = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        
+        try {
+          const successful = document.execCommand('copy');
+          if (successful) {
+            setCopiedIndex(index);
+            toast.success('Log copied to clipboard!', { autoClose: 1500 });
+            setTimeout(() => setCopiedIndex(null), 2000);
+          } else {
+            throw new Error('Copy command failed');
+          }
+        } finally {
+          document.body.removeChild(textArea);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to copy:', err);
+      toast.error('Failed to copy to clipboard. Please try again.');
+    }
+  }, []);
+
   const renderLoadingState = () => (
     <Modal show={show && isConnecting} onHide={onHide} size="lg" centered>
       <Modal.Header closeButton>
@@ -264,36 +304,64 @@ const LogsModal: React.FC<LogsModalProps> = ({
                   </div>
                 )}
                 <div style={{ height: '400px', overflowY: 'auto' }}>
-                  {filteredLogs.map((log, index) => (
-                    <div 
-                      key={`${log.container_id}-${log.timestamp}-${index}`}
-                      className={`log-entry p-2 mb-2 rounded border-start border-3 ${
-                        log.level?.toLowerCase() === 'error' || log.level?.toLowerCase() === 'fatal' 
-                          ? 'bg-danger bg-opacity-10 border-danger' 
-                          : 'bg-success bg-opacity-10 border-success'
-                      }`}
-                      style={{
-                        animation: `slideIn 0.3s ease-out ${index * 0.05}s both`
-                      }}
-                    >
-                      <div className="d-flex justify-content-between align-items-start mb-1">
-                        <Badge 
-                          bg={getLogLevelColor(log.level || 'info')} 
-                          className="me-2" 
-                        >
-                          {log.level || 'INFO'}
-                        </Badge>
-                        <small className="text-muted">
-                          {formatTime(log.timestamp)}
-                        </small>
+                  {filteredLogs.map((log, index) => {
+                    const logText = `[${formatTime(log.timestamp)}] [${log.level || 'INFO'}] ${log.message || log.raw}`;
+                    
+                    return (
+                      <div 
+                        key={`${log.container_id}-${log.timestamp}-${index}`}
+                        className={`log-entry p-2 mb-2 rounded border-start border-3 position-relative ${
+                          log.level?.toLowerCase() === 'error' || log.level?.toLowerCase() === 'fatal' 
+                            ? 'bg-danger bg-opacity-10 border-danger' 
+                            : 'bg-success bg-opacity-10 border-success'
+                        }`}
+                        style={{
+                          animation: `slideIn 0.3s ease-out ${index * 0.05}s both`
+                        }}
+                      >
+                        <div className="d-flex justify-content-between align-items-start mb-1">
+                          <div className="d-flex align-items-center">
+                            <Badge 
+                              bg={getLogLevelColor(log.level || 'info')} 
+                              className="me-2" 
+                            >
+                              {log.level || 'INFO'}
+                            </Badge>
+                            <small className="text-muted">
+                              {formatTime(log.timestamp)}
+                            </small>
+                          </div>
+                          <OverlayTrigger
+                            placement="left"
+                            overlay={
+                              <Tooltip id={`tooltip-modal-${index}`}>
+                                {copiedIndex === index ? 'Copied!' : 'Copy to clipboard'}
+                              </Tooltip>
+                            }
+                          >
+                            <button
+                              className="btn btn-sm btn-link text-muted p-0"
+                              onClick={() => copyToClipboard(logText, index)}
+                              style={{ 
+                                fontSize: '0.9rem',
+                                opacity: 0.6,
+                                transition: 'opacity 0.2s'
+                              }}
+                              onMouseEnter={(e) => e.currentTarget.style.opacity = '1'}
+                              onMouseLeave={(e) => e.currentTarget.style.opacity = '0.6'}
+                            >
+                              <i className={copiedIndex === index ? 'bi bi-check2' : 'bi bi-clipboard'}></i>
+                            </button>
+                          </OverlayTrigger>
+                        </div>
+                        <div className="log-message">
+                          <code style={{ fontSize: '0.85em', wordBreak: 'break-word' }}>
+                            {log.message || log.raw}
+                          </code>
+                        </div>
                       </div>
-                      <div className="log-message">
-                        <code style={{ fontSize: '0.85em', wordBreak: 'break-word' }}>
-                          {log.message || log.raw}
-                        </code>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             ) : (

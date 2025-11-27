@@ -183,8 +183,23 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
       delete connections.current[containerId];
     }
 
-    // Connect using environment variable for WebSocket URL
-    const wsBaseUrl = process.env.REACT_APP_WS_URL || 'ws://localhost:8093';
+    // Connect using dynamic WebSocket URL based on current location
+    // This ensures WebSocket works when accessing via network URL
+    const getWebSocketUrl = () => {
+      // If REACT_APP_WS_URL is set and we're in development, use it
+      if (process.env.REACT_APP_WS_URL && process.env.NODE_ENV === 'development') {
+        return process.env.REACT_APP_WS_URL;
+      }
+      
+      // Otherwise, dynamically determine WebSocket URL from current location
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.hostname;
+      const port = '8093'; // Backend WebSocket port
+      
+      return `${protocol}//${host}:${port}`;
+    };
+    
+    const wsBaseUrl = getWebSocketUrl();
     const wsUrl = `${wsBaseUrl}/ws/logs/${containerId}`;
     
     try {
@@ -210,12 +225,20 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
         try {
           const data = JSON.parse(event.data);
           
-          if (data.type === 'pong' || data.type === 'connection_established') {
-            return; // Acknowledge ping/pong
+          // Handle ping from server - respond with pong
+          if (data.type === 'ping') {
+            try {
+              ws.send(JSON.stringify({ type: 'pong', timestamp: new Date().toISOString() }));
+              safeConsole.log(`Responded to server ping for container: ${containerId}`);
+            } catch (e) {
+              safeConsole.error(`Failed to send pong for container ${containerId}:`, e);
+            }
+            return;
           }
           
-          if (data.type === 'ping') {
-            ws.send(JSON.stringify({ type: 'pong' }));
+          // Handle pong from server or connection established
+          if (data.type === 'pong' || data.type === 'connection_established') {
+            safeConsole.log(`Received ${data.type} for container: ${containerId}`);
             return;
           }
           
@@ -244,7 +267,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
             onMessage(logEntry, containerId);
           }
         } catch (error) {
-          // Silent error handling
+          safeConsole.error(`Error processing WebSocket message for ${containerId}:`, error);
         }
       };
 
